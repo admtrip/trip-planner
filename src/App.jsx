@@ -148,6 +148,13 @@ function mapsLink(address) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`
 }
 
+function contrastTextColor(hex) {
+  if (!hex || hex[0] !== '#' || hex.length < 7) return INK
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16)
+  const brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  return brightness > 0.55 ? INK : '#FFFFFF'
+}
+
 function getItemDayKey(item) {
   if (item.day_date) return item.day_date
   if (item.check_in) return item.check_in.split('T')[0]
@@ -993,6 +1000,24 @@ function App() {
     fetchISplits(selectedTrip.id)
   }
 
+  // Swaps sort_order between an item and its neighbor within the same
+  // subsection (a day's planned list, or a day's suggestions list), so
+  // reordering never affects items elsewhere in the trip.
+  async function moveItem(item, direction, siblings) {
+    if (!isOnline) { alert("You're offline — reordering requires a connection."); return }
+    const idx = siblings.findIndex(i => i.id === item.id)
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (idx === -1 || targetIdx < 0 || targetIdx >= siblings.length) return
+    const neighbor = siblings[targetIdx]
+    const itemOrder = item.sort_order ?? idx
+    const neighborOrder = neighbor.sort_order ?? targetIdx
+    await Promise.all([
+      supabase.from('itinerary_items').update({ sort_order: neighborOrder }).eq('id', item.id),
+      supabase.from('itinerary_items').update({ sort_order: itemOrder }).eq('id', neighbor.id),
+    ])
+    fetchItems(selectedTrip.id)
+  }
+
   function getExpSplitMembers() {
     if (expSplitType === 'solo') return []
     if (expSplitType === 'all') return members.map(m => m.user_id)
@@ -1189,6 +1214,7 @@ function App() {
     dated.sort((a, b) => {
       if (a.date_key < b.date_key) return -1
       if (a.date_key > b.date_key) return 1
+      if ((a.sort_order || 0) !== (b.sort_order || 0)) return (a.sort_order || 0) - (b.sort_order || 0)
       const aTime = a._occurrence === 'checkout' || a._occurrence === 'arrive' ? timeKeyFromDateTime(a.check_out)
         : a._occurrence === 'checkin' || a._occurrence === 'depart' ? timeKeyFromDateTime(a.check_in)
         : (a.start_time || timeKeyFromDateTime(a.check_in))
@@ -1198,6 +1224,14 @@ function App() {
       return aTime.localeCompare(bTime)
     })
     return { dated, undated }
+  }
+
+  // "Suggestions" for a day are activities marked suggested with no fixed
+  // time yet — everything else (booked, or suggested-but-timed) counts as
+  // planned and stays in the main time-ordered list.
+  function isUntimedSuggestion(item) {
+    const timing = TYPE_CONFIG[item.type]?.timing || 'single'
+    return item.status === 'suggested' && timing === 'single' && !item.start_time
   }
 
   function itemSubtitle(item, isBooking) {
@@ -1266,7 +1300,7 @@ function App() {
     )
   }
 
-  function renderCard(item, key) {
+  function renderCard(item, key, coloredBg = false, siblings = null) {
     const isBooking = item._source === 'booking'
     const borderColor = isBooking ? bookingBorderColor(item, user.id) : (TYPE_CONFIG[item.type]?.color || TEAL)
     const icon = isBooking ? categoryIcon(item.category) : (TYPE_CONFIG[item.type]?.label.split(' ')[0] || '📝')
@@ -1279,17 +1313,36 @@ function App() {
       return ''
     })()
     const showCost = !isBooking && item.is_prepaid && item.cost && item._occurrence !== 'checkout' && item._occurrence !== 'arrive'
+
+    // On the Itinerary tab, suggested (unconfirmed) items get a flat neutral
+    // background regardless of category; booked items get their full
+    // category color, with text color auto-picked for readability.
+    const isSuggested = item.status === 'suggested'
+    const cardBg = coloredBg ? (isSuggested ? '#EFE9E2' : borderColor) : 'white'
+    const textColor = coloredBg ? contrastTextColor(cardBg) : INK
+    const mutedTextColor = coloredBg ? (textColor === '#FFFFFF' ? 'rgba(255,255,255,0.8)' : 'rgba(28,25,23,0.65)') : MUTED
+
     return (
-      <div key={key} style={{ background: 'white', borderRadius: '20px', padding: '18px 20px', marginBottom: '14px', boxShadow: '0 1px 3px rgba(28,25,23,0.05)', borderLeft: `4px solid ${borderColor}`, position: 'relative' }}>
-        {!isBooking && (
-          <div style={{ position: 'absolute', top: '14px', right: '16px', display: 'flex', gap: '4px' }}>
-            <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: ACCENT }} title="Edit">✏️</button>
-            <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: '#d6d3d1' }} title="Delete">✕</button>
+      <div key={key} style={{
+        background: cardBg, borderRadius: '20px', padding: '18px 20px', marginBottom: '14px',
+        boxShadow: '0 1px 3px rgba(28,25,23,0.05)', position: 'relative',
+        ...(coloredBg ? {} : { borderLeft: `4px solid ${borderColor}` })
+      }}>
+        {!isBooking && siblings && siblings.length > 1 && (
+          <div style={{ position: 'absolute', top: '14px', left: '16px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            <button onClick={() => moveItem(item, 'up', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7, fontSize: '11px', padding: '2px 4px' }} title="Move up">▲</button>
+            <button onClick={() => moveItem(item, 'down', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7, fontSize: '11px', padding: '2px 4px' }} title="Move down">▼</button>
           </div>
         )}
-        <div style={{ paddingRight: isBooking ? 0 : '56px' }}>
+        {!isBooking && (
+          <div style={{ position: 'absolute', top: '14px', right: '16px', display: 'flex', gap: '4px' }}>
+            <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.85 : 1 }} title="Edit">✏️</button>
+            <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: coloredBg ? textColor : '#d6d3d1', opacity: coloredBg ? 0.6 : 1 }} title="Delete">✕</button>
+          </div>
+        )}
+        <div style={{ paddingRight: isBooking ? 0 : '56px', paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '26px' : 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <h3 style={{ fontWeight: '700', fontSize: '17px', color: INK, margin: 0 }}>
+            <h3 style={{ fontWeight: '700', fontSize: '17px', color: textColor, margin: 0 }}>
               {icon} {occurrenceLabel}{item.title}
             </h3>
             {item.address && (
@@ -1298,18 +1351,18 @@ function App() {
               </a>
             )}
           </div>
-          {subtitle && <p style={{ color: MUTED, fontSize: '13px', margin: '4px 0 0' }}>{subtitle}</p>}
+          {subtitle && <p style={{ color: mutedTextColor, fontSize: '13px', margin: '4px 0 0' }}>{subtitle}</p>}
           {item.confirmation && (
-            <p style={{ fontSize: '12px', color: MUTED, margin: '4px 0 0' }}>Confirmation: <span style={{ fontFamily: 'monospace', color: ACCENT_TEXT }}>{item.confirmation}</span></p>
+            <p style={{ fontSize: '12px', color: mutedTextColor, margin: '4px 0 0' }}>Confirmation: <span style={{ fontFamily: 'monospace', color: coloredBg ? textColor : ACCENT_TEXT }}>{item.confirmation}</span></p>
           )}
           {(item.traveler_name || item.traveler_user_id) && (
-            <p style={{ fontSize: '13px', color: ACCENT_TEXT, margin: '4px 0 0' }}>👤 {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
+            <p style={{ fontSize: '13px', color: coloredBg ? textColor : ACCENT_TEXT, margin: '4px 0 0' }}>👤 {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
           )}
           {item.notes && (
-            <p style={{ fontSize: '13px', color: '#57534e', margin: '8px 0 0', background: '#FAFAF8', padding: '8px 12px', borderRadius: '10px' }}>{item.notes}</p>
+            <p style={{ fontSize: '13px', color: coloredBg ? textColor : '#57534e', margin: '8px 0 0', background: coloredBg ? 'rgba(255,255,255,0.15)' : '#FAFAF8', padding: '8px 12px', borderRadius: '10px' }}>{item.notes}</p>
           )}
           {showCost && (
-            <p style={{ fontSize: '12px', color: MUTED, margin: '8px 0 0' }}>
+            <p style={{ fontSize: '12px', color: mutedTextColor, margin: '8px 0 0' }}>
               💵 {item.cost} {item.cost_currency && item.cost_currency !== 'USD' ? item.cost_currency : ''}
               {usdEquivalent(item.cost, item.cost_currency) && <span> (~${usdEquivalent(item.cost, item.cost_currency)} USD)</span>}
             </p>
@@ -1475,6 +1528,7 @@ function App() {
           </div>
           <h1 style={{ fontSize: '30px', fontWeight: '800', color: 'white', margin: 0 }}>{selectedTrip.name}</h1>
           <p style={{ color: 'rgba(255,255,255,0.9)', fontSize: '14px', margin: '8px 0 0' }}>📍 {selectedTrip.destination}</p>
+          <p style={{ background: 'yellow', color: 'black', fontWeight: '900', fontSize: '18px', padding: '10px', margin: '12px 0', textAlign: 'center' }}>🚨 TEST MARKER 12345 🚨</p>
           {members.length > 0 && (
             <div style={{ display: 'flex', marginTop: '14px' }}>
               {members.slice(0, 5).map((m, i) => (
@@ -1520,13 +1574,41 @@ function App() {
                 {syncingCalendar ? 'Syncing…' : '📅 Sync my Calendar'}
               </button>
               <div style={{ background: '#F0EFEA', borderRadius: '14px', padding: '4px', display: 'flex', gap: '4px', marginBottom: '28px' }}>
-                {['group', 'personal'].map(view => (
+                {['group', 'personal', 'suggestions'].map(view => (
                   <button key={view} onClick={() => setMasterView(view)} style={subToggleStyle(masterView === view)}>
-                    {view === 'group' ? '👥 Group view' : '👤 My view'}
+                    {view === 'group' ? '👥 Group view' : view === 'personal' ? '👤 My view' : '💡 Suggestions'}
                   </button>
                 ))}
               </div>
-              {masterDates.length === 0 && masterTimeline.undated.length === 0 ? (
+              {masterView === 'suggestions' ? (
+                (() => {
+                  const allSuggested = items.filter(i => i.status === 'suggested')
+                  if (allSuggested.length === 0) {
+                    return (
+                      <div style={{ textAlign: 'center', padding: '48px 24px', color: MUTED, fontSize: '14px', background: 'white', borderRadius: '24px' }}>
+                        <div style={{ fontSize: '32px', marginBottom: '12px' }}>💡</div>
+                        No suggestions yet — set an item's status to "Suggested" to see it here.
+                      </div>
+                    )
+                  }
+                  const groups = {}
+                  allSuggested.forEach(i => {
+                    const key = (i.address || '').trim() || 'No location set'
+                    ;(groups[key] = groups[key] || []).push(i)
+                  })
+                  const groupKeys = Object.keys(groups).sort((a, b) => {
+                    if (a === 'No location set') return 1
+                    if (b === 'No location set') return -1
+                    return a.localeCompare(b)
+                  })
+                  return groupKeys.map(loc => (
+                    <div key={loc} style={{ marginBottom: '28px' }}>
+                      <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>📍 {loc}</h3>
+                      {groups[loc].map((item, idx) => renderCard(item, `sugg-${loc}-${idx}`, true))}
+                    </div>
+                  ))
+                })()
+              ) : masterDates.length === 0 && masterTimeline.undated.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 24px', color: MUTED, fontSize: '14px', background: 'white', borderRadius: '24px' }}>
                   <div style={{ fontSize: '32px', marginBottom: '12px' }}>🗺️</div>
                   {masterView === 'personal' ? 'Nothing assigned to you yet.' : 'No itinerary or bookings yet — add items to get started!'}
@@ -1536,15 +1618,25 @@ function App() {
                   {masterTimeline.undated.length > 0 && (
                     <div style={{ marginBottom: '28px' }}>
                       <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>💵 New Expenses</h3>
-                      {masterTimeline.undated.map((item, idx) => renderCard(item, `undated-${idx}`))}
+                      {masterTimeline.undated.map((item, idx) => renderCard(item, `undated-${idx}`, true))}
                     </div>
                   )}
-                  {masterDates.map(date => (
-                    <div key={date} style={{ marginBottom: '28px' }}>
-                      <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>{formatDate(date)}</h3>
-                      {masterGrouped[date].map((item, idx) => renderCard(item, `${date}-${idx}`))}
-                    </div>
-                  ))}
+                  {masterDates.map(date => {
+                    const plannedInDay = masterGrouped[date].filter(i => !isUntimedSuggestion(i))
+                    const suggestedInDay = masterGrouped[date].filter(i => isUntimedSuggestion(i))
+                    return (
+                      <div key={date} style={{ marginBottom: '28px' }}>
+                        <h3 style={{ fontSize: '22px', fontWeight: '800', color: '#4A1F30', margin: '0 0 14px', textAlign: 'left', paddingBottom: '8px', borderBottom: '2px solid #4A1F30' }}>{formatDate(date)}</h3>
+                        {plannedInDay.map((item, idx) => renderCard(item, `${date}-planned-${idx}`, true, plannedInDay))}
+                        {suggestedInDay.length > 0 && (
+                          <>
+                            <h4 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, margin: plannedInDay.length > 0 ? '18px 0 10px' : '0 0 10px' }}>💡 Suggestions:</h4>
+                            {suggestedInDay.map((item, idx) => renderCard(item, `${date}-suggested-${idx}`, true, suggestedInDay))}
+                          </>
+                        )}
+                      </div>
+                    )
+                  })}
                 </>
               )}
             </>
