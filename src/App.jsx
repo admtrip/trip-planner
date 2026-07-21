@@ -148,6 +148,36 @@ function mapsLink(address) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`
 }
 
+// Straight-line distance in km between two {lat,lng} points — a free proxy
+// for "how close together are these," since real driving/walking time would
+// require enabling Google's paid Distance Matrix API.
+function haversineKm(a, b) {
+  const R = 6371
+  const dLat = (b.lat - a.lat) * Math.PI / 180
+  const dLng = (b.lng - a.lng) * Math.PI / 180
+  const lat1 = a.lat * Math.PI / 180
+  const lat2 = b.lat * Math.PI / 180
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+// Same localStorage cache key as the Map tab uses, so an address geocoded
+// once (from either feature) is never looked up twice.
+function geocodeAddressCached(geocoder, address) {
+  const cacheKey = `tripmap:geocode:${address}`
+  const cached = localStorage.getItem(cacheKey)
+  if (cached) return Promise.resolve(JSON.parse(cached))
+  return new Promise(resolve => {
+    geocoder.geocode({ address }, (results, status) => {
+      if (status === 'OK' && results[0]) {
+        const loc = { lat: results[0].geometry.location.lat(), lng: results[0].geometry.location.lng() }
+        localStorage.setItem(cacheKey, JSON.stringify(loc))
+        resolve(loc)
+      } else resolve(null)
+    })
+  })
+}
+
 // Builds one Google Maps link that routes through every addressed item in
 // roughly chronological order — opens the whole trip as a real route in the
 // native Google Maps app (or its website) instead of one pin at a time.
@@ -403,6 +433,8 @@ function App() {
   const [editingTrip, setEditingTrip] = useState(null)
   const [activeTab, setActiveTab] = useState('master')
   const [masterView, setMasterView] = useState('group')
+  const [selectedDay, setSelectedDay] = useState(null)
+  const [geoCache, setGeoCache] = useState({})
   const [tripName, setTripName] = useState('')
   const [destination, setDestination] = useState('')
   const [startDate, setStartDate] = useState('')
@@ -559,6 +591,28 @@ function App() {
   useEffect(() => {
     const currenciesUsed = new Set(items.filter(i => i.cost).map(i => i.cost_currency || 'USD'))
     currenciesUsed.forEach(code => { if (!(code in fxRates)) fetchFxRate(code) })
+  }, [items])
+
+  // Geocodes every unique address across all items (suggested and booked)
+  // so the Suggestions tab can cluster nearby ones together and flag
+  // proximity to already-booked days. Shares its cache with the Map tab.
+  useEffect(() => {
+    const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
+    if (!apiKey) return
+    const addresses = [...new Set(items.filter(i => i.address).map(i => i.address))]
+    const missing = addresses.filter(a => !(a in geoCache))
+    if (missing.length === 0) return
+    let cancelled = false
+    loadGoogleMaps(apiKey).then(async maps => {
+      const geocoder = new maps.Geocoder()
+      const updates = {}
+      for (const addr of missing) {
+        const loc = await geocodeAddressCached(geocoder, addr)
+        updates[addr] = loc // cache a null too, so we don't keep retrying a bad address
+      }
+      if (!cancelled) setGeoCache(prev => ({ ...prev, ...updates }))
+    }).catch(err => console.error('Geocoding for suggestions failed:', err))
+    return () => { cancelled = true }
   }, [items])
 
   // Live exchange rate via Frankfurter (free, no API key). Stores 1 unit of
@@ -1368,7 +1422,7 @@ function App() {
     // background regardless of category; booked items get their full
     // category color, with text color auto-picked for readability.
     const isSuggested = item.status === 'suggested'
-    const cardBg = coloredBg ? (isSuggested ? ACCENT_LIGHT : borderColor) : 'white'
+    const cardBg = coloredBg ? (isSuggested ? '#EFE9E2' : borderColor) : 'white'
     const textColor = coloredBg ? contrastTextColor(cardBg) : INK
     const mutedTextColor = coloredBg ? (textColor === '#FFFFFF' ? 'rgba(255,255,255,0.8)' : 'rgba(28,25,23,0.65)') : MUTED
 
@@ -1644,6 +1698,9 @@ function App() {
               </div>
               {masterView === 'suggestions' ? (
                 (() => {
+                  const CLUSTER_KM = 1.5   // suggestions closer than this get grouped together
+                  const NEARBY_BOOKED_KM = 10 // worth flagging as "near your [day] plans" within this range
+
                   const allSuggested = items.filter(i => i.status === 'suggested')
                   if (allSuggested.length === 0) {
                     return (
@@ -1653,22 +1710,73 @@ function App() {
                       </div>
                     )
                   }
-                  const groups = {}
-                  allSuggested.forEach(i => {
-                    const key = (i.address || '').trim() || 'No location set'
-                    ;(groups[key] = groups[key] || []).push(i)
+
+                  const withGeo = allSuggested
+                    .filter(i => i.address && geoCache[i.address])
+                    .map(i => ({ ...i, _geo: geoCache[i.address] }))
+                  const withoutGeo = allSuggested.filter(i => !i.address || !geoCache[i.address])
+
+                  const bookedWithGeo = items
+                    .filter(i => i.status === 'booked' && i.address && geoCache[i.address] && getItemDayKey(i))
+                    .map(i => ({ ...i, _geo: geoCache[i.address], _day: getItemDayKey(i) }))
+
+                  function nearestBookedNote(geo) {
+                    let best = null
+                    bookedWithGeo.forEach(b => {
+                      const d = haversineKm(geo, b._geo)
+                      if (d <= NEARBY_BOOKED_KM && (!best || d < best.dist)) best = { dist: d, item: b }
+                    })
+                    if (!best) return null
+                    const distLabel = best.dist < 1 ? `${Math.round(best.dist * 1000)}m` : `${best.dist.toFixed(1)}km`
+                    return `📍 ~${distLabel} from your ${formatDate(best.item._day)} plans (${best.item.title})`
+                  }
+
+                  // Greedy proximity clustering: each unclustered suggestion seeds a
+                  // new group, pulling in every other unclustered one within range.
+                  const clusters = []
+                  const used = new Set()
+                  withGeo.forEach((item, i) => {
+                    if (used.has(i)) return
+                    const cluster = [item]
+                    used.add(i)
+                    withGeo.forEach((other, j) => {
+                      if (used.has(j)) return
+                      if (haversineKm(item._geo, other._geo) <= CLUSTER_KM) {
+                        cluster.push(other)
+                        used.add(j)
+                      }
+                    })
+                    clusters.push(cluster)
                   })
-                  const groupKeys = Object.keys(groups).sort((a, b) => {
-                    if (a === 'No location set') return 1
-                    if (b === 'No location set') return -1
-                    return a.localeCompare(b)
-                  })
-                  return groupKeys.map(loc => (
-                    <div key={loc} style={{ marginBottom: '28px' }}>
-                      <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>📍 {loc}</h3>
-                      {groups[loc].map((item, idx) => renderCard(item, `sugg-${loc}-${idx}`, true))}
-                    </div>
-                  ))
+
+                  return (
+                    <>
+                      {clusters.map((cluster, ci) => (
+                        <div key={ci} style={{ marginBottom: '28px' }}>
+                          <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>
+                            📍 {cluster.length > 1 ? `${cluster.length} suggestions within ~${CLUSTER_KM}km of each other` : cluster[0].address}
+                          </h3>
+                          {cluster.map((item, idx) => {
+                            const note = nearestBookedNote(item._geo)
+                            return (
+                              <div key={idx}>
+                                {renderCard(item, `sugg-${ci}-${idx}`, true)}
+                                {note && <p style={{ fontSize: '12px', color: ACCENT_TEXT, margin: '-8px 0 14px', paddingLeft: '4px' }}>{note}</p>}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ))}
+                      {withoutGeo.length > 0 && (
+                        <div style={{ marginBottom: '28px' }}>
+                          <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>
+                            📍 No location set
+                          </h3>
+                          {withoutGeo.map((item, idx) => renderCard(item, `sugg-noloc-${idx}`, true))}
+                        </div>
+                      )}
+                    </>
+                  )
                 })()
               ) : masterDates.length === 0 && masterTimeline.undated.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 24px', color: MUTED, fontSize: '14px', background: 'white', borderRadius: '24px' }}>
@@ -1683,22 +1791,47 @@ function App() {
                       {masterTimeline.undated.map((item, idx) => renderCard(item, `undated-${idx}`, true))}
                     </div>
                   )}
-                  {masterDates.map(date => {
-                    const plannedInDay = masterGrouped[date].filter(i => !isUntimedSuggestion(i))
-                    const suggestedInDay = masterGrouped[date].filter(i => isUntimedSuggestion(i))
+                  {(() => {
+                    const todayKey = new Date().toISOString().split('T')[0]
+                    const effectiveDay = (selectedDay && masterDates.includes(selectedDay)) ? selectedDay
+                      : (masterDates.includes(todayKey) ? todayKey : masterDates[0])
+                    const plannedInDay = masterGrouped[effectiveDay].filter(i => !isUntimedSuggestion(i))
+                    const suggestedInDay = masterGrouped[effectiveDay].filter(i => isUntimedSuggestion(i))
                     return (
-                      <div key={date} style={{ marginBottom: '28px', paddingBottom: '4px', borderBottom: '3px solid #4A1F30' }}>
-                        <h3 style={{ fontSize: '22px', fontWeight: '800', color: '#4A1F30', margin: '0 0 14px', textAlign: 'left', paddingBottom: '8px', borderBottom: '2px solid #4A1F30' }}>{formatDate(date)}</h3>
-                        {plannedInDay.map((item, idx) => renderCard(item, `${date}-planned-${idx}`, true, plannedInDay))}
-                        {suggestedInDay.length > 0 && (
-                          <>
-                            <h4 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, margin: plannedInDay.length > 0 ? '18px 0 10px' : '0 0 10px' }}>💡 Suggestions:</h4>
-                            {suggestedInDay.map((item, idx) => renderCard(item, `${date}-suggested-${idx}`, true, suggestedInDay))}
-                          </>
+                      <>
+                        {masterDates.length > 1 && (
+                          <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '10px', marginBottom: '18px', WebkitOverflowScrolling: 'touch' }}>
+                            {masterDates.map(date => {
+                              const isToday = date === todayKey
+                              const isActive = date === effectiveDay
+                              const shortLabel = new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' })
+                              return (
+                                <button key={date} onClick={() => setSelectedDay(date)} style={{
+                                  flexShrink: 0, padding: '8px 14px', borderRadius: '999px', cursor: 'pointer', fontFamily: FONT,
+                                  border: isActive ? 'none' : `1.5px solid ${CARD_BORDER}`,
+                                  background: isActive ? '#4A1F30' : 'white',
+                                  color: isActive ? 'white' : INK,
+                                  fontSize: '13px', fontWeight: '700', whiteSpace: 'nowrap'
+                                }}>
+                                  {shortLabel}{isToday ? ' · Today' : ''}
+                                </button>
+                              )
+                            })}
+                          </div>
                         )}
-                      </div>
+                        <div style={{ marginBottom: '28px' }}>
+                          <h3 style={{ fontSize: '22px', fontWeight: '800', color: '#4A1F30', margin: '0 0 14px', textAlign: 'left' }}>{formatDate(effectiveDay)}</h3>
+                          {plannedInDay.map((item, idx) => renderCard(item, `${effectiveDay}-planned-${idx}`, true, plannedInDay))}
+                          {suggestedInDay.length > 0 && (
+                            <>
+                              <h4 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, margin: plannedInDay.length > 0 ? '18px 0 10px' : '0 0 10px' }}>💡 Suggestions:</h4>
+                              {suggestedInDay.map((item, idx) => renderCard(item, `${effectiveDay}-suggested-${idx}`, true, suggestedInDay))}
+                            </>
+                          )}
+                        </div>
+                      </>
                     )
-                  })}
+                  })()}
                 </>
               )}
             </>
