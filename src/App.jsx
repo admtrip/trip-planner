@@ -1400,11 +1400,12 @@ function App() {
   })
 
   const subToggleStyle = (active) => ({
-    flex: 1, padding: '10px', border: 'none', borderRadius: '12px',
+    flex: 1, padding: '10px 4px', border: 'none', borderRadius: '12px',
     background: active ? GRADIENT : 'transparent',
     color: active ? 'white' : MUTED,
-    fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT,
-    boxShadow: active ? '0 2px 8px rgba(255,90,95,0.25)' : 'none'
+    fontSize: '12px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT,
+    boxShadow: active ? '0 2px 8px rgba(255,90,95,0.25)' : 'none',
+    whiteSpace: 'nowrap'
   })
 
   const iconBtn = { background: 'none', border: 'none', cursor: 'pointer', fontSize: '15px', padding: '3px 5px', lineHeight: 1 }
@@ -1528,7 +1529,6 @@ function App() {
           </div>
           <h1 style={{ fontSize: '30px', fontWeight: '800', color: 'white', margin: 0 }}>{selectedTrip.name}</h1>
           <p style={{ color: 'rgba(255,255,255,0.9)', fontSize: '14px', margin: '8px 0 0' }}>📍 {selectedTrip.destination}</p>
-          <p style={{ background: 'yellow', color: 'black', fontWeight: '900', fontSize: '18px', padding: '10px', margin: '12px 0', textAlign: 'center' }}>🚨 TEST MARKER 12345 🚨</p>
           {members.length > 0 && (
             <div style={{ display: 'flex', marginTop: '14px' }}>
               {members.slice(0, 5).map((m, i) => (
@@ -1576,7 +1576,7 @@ function App() {
               <div style={{ background: '#F0EFEA', borderRadius: '14px', padding: '4px', display: 'flex', gap: '4px', marginBottom: '28px' }}>
                 {['group', 'personal', 'suggestions'].map(view => (
                   <button key={view} onClick={() => setMasterView(view)} style={subToggleStyle(masterView === view)}>
-                    {view === 'group' ? '👥 Group view' : view === 'personal' ? '👤 My view' : '💡 Suggestions'}
+                    {view === 'group' ? 'Group view' : view === 'personal' ? 'My view' : 'Suggestions'}
                   </button>
                 ))}
               </div>
