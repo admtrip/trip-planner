@@ -1634,8 +1634,8 @@ function App() {
 
     return (
       <div style={{ minHeight: '100vh', background: BG, fontFamily: FONT }}>
-        <div style={{ background: BG_GRADIENT, padding: 'max(60px, calc(48px + env(safe-area-inset-top))) 24px 64px', position: 'relative' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <div style={{ background: BG_GRADIENT, padding: 'max(48px, calc(20px + env(safe-area-inset-top))) 24px 32px', position: 'relative' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
             <button onClick={() => { setSelectedTrip(null); setActiveTab('master') }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.85)', fontSize: '14px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontFamily: FONT }}>
               ← Back
             </button>
@@ -1643,10 +1643,9 @@ function App() {
               {copiedId === selectedTrip.id ? '✅ Copied!' : '🔗 Invite'}
             </button>
           </div>
-          <h1 style={{ fontSize: '30px', fontWeight: '800', color: 'white', margin: 0 }}>{selectedTrip.name}</h1>
-          <p style={{ color: 'rgba(255,255,255,0.9)', fontSize: '14px', margin: '8px 0 0' }}>📍 {selectedTrip.destination}</p>
+          <h1 style={{ fontSize: '36px', fontWeight: '800', color: 'white', margin: 0, textAlign: 'center' }}>{selectedTrip.name}</h1>
           {members.length > 0 && (
-            <div style={{ display: 'flex', marginTop: '14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '14px' }}>
               {members.slice(0, 5).map((m, i) => (
                 <div key={m.user_id} title={m.display_name} style={{
                   width: '30px', height: '30px', borderRadius: '50%', background: 'rgba(255,255,255,0.95)', color: ACCENT_DARK,
@@ -1665,7 +1664,7 @@ function App() {
           )}
         </div>
 
-        <div style={{ maxWidth: '560px', margin: '-32px auto 0', padding: '0 20px', position: 'relative', zIndex: 10 }}>
+        <div style={{ maxWidth: '560px', margin: '-20px auto 0', padding: '0 20px 40px', position: 'relative', zIndex: 10 }}>
 
           {!isOnline && (
             <div style={{ background: '#3A3530', color: 'white', borderRadius: '14px', padding: '10px 16px', marginBottom: '16px', fontSize: '13px', fontWeight: '600', textAlign: 'center' }}>
@@ -1793,14 +1792,23 @@ function App() {
                   )}
                   {(() => {
                     const todayKey = new Date().toISOString().split('T')[0]
-                    const effectiveDay = (selectedDay && masterDates.includes(selectedDay)) ? selectedDay
+                    const effectiveDay = (selectedDay && (selectedDay === 'ALL' || masterDates.includes(selectedDay))) ? selectedDay
                       : (masterDates.includes(todayKey) ? todayKey : masterDates[0])
-                    const plannedInDay = masterGrouped[effectiveDay].filter(i => !isUntimedSuggestion(i))
-                    const suggestedInDay = masterGrouped[effectiveDay].filter(i => isUntimedSuggestion(i))
+                    const showingAll = effectiveDay === 'ALL'
+                    const daysToRender = showingAll ? masterDates : [effectiveDay]
                     return (
                       <>
                         {masterDates.length > 1 && (
                           <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '10px', marginBottom: '18px', WebkitOverflowScrolling: 'touch' }}>
+                            <button onClick={() => setSelectedDay('ALL')} style={{
+                              flexShrink: 0, padding: '8px 14px', borderRadius: '999px', cursor: 'pointer', fontFamily: FONT,
+                              border: showingAll ? 'none' : `1.5px solid ${CARD_BORDER}`,
+                              background: showingAll ? '#4A1F30' : 'white',
+                              color: showingAll ? 'white' : INK,
+                              fontSize: '13px', fontWeight: '700', whiteSpace: 'nowrap'
+                            }}>
+                              Full Itinerary
+                            </button>
                             {masterDates.map(date => {
                               const isToday = date === todayKey
                               const isActive = date === effectiveDay
@@ -1819,16 +1827,22 @@ function App() {
                             })}
                           </div>
                         )}
-                        <div style={{ marginBottom: '28px' }}>
-                          <h3 style={{ fontSize: '22px', fontWeight: '800', color: '#4A1F30', margin: '0 0 14px', textAlign: 'left' }}>{formatDate(effectiveDay)}</h3>
-                          {plannedInDay.map((item, idx) => renderCard(item, `${effectiveDay}-planned-${idx}`, true, plannedInDay))}
-                          {suggestedInDay.length > 0 && (
-                            <>
-                              <h4 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, margin: plannedInDay.length > 0 ? '18px 0 10px' : '0 0 10px' }}>💡 Suggestions:</h4>
-                              {suggestedInDay.map((item, idx) => renderCard(item, `${effectiveDay}-suggested-${idx}`, true, suggestedInDay))}
-                            </>
-                          )}
-                        </div>
+                        {daysToRender.map(day => {
+                          const plannedInDay = masterGrouped[day].filter(i => !isUntimedSuggestion(i))
+                          const suggestedInDay = masterGrouped[day].filter(i => isUntimedSuggestion(i))
+                          return (
+                            <div key={day} style={{ marginBottom: '28px' }}>
+                              <h3 style={{ fontSize: '22px', fontWeight: '800', color: '#4A1F30', margin: '0 0 14px', textAlign: 'left', paddingBottom: '8px', borderBottom: '2px solid #4A1F30' }}>{formatDate(day)}</h3>
+                              {plannedInDay.map((item, idx) => renderCard(item, `${day}-planned-${idx}`, true, plannedInDay))}
+                              {suggestedInDay.length > 0 && (
+                                <>
+                                  <h4 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, margin: plannedInDay.length > 0 ? '18px 0 10px' : '0 0 10px' }}>💡 Suggestions:</h4>
+                                  {suggestedInDay.map((item, idx) => renderCard(item, `${day}-suggested-${idx}`, true, suggestedInDay))}
+                                </>
+                              )}
+                            </div>
+                          )
+                        })}
                       </>
                     )
                   })()}
