@@ -148,6 +148,30 @@ function mapsLink(address) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`
 }
 
+// Builds one Google Maps link that routes through every addressed item in
+// roughly chronological order — opens the whole trip as a real route in the
+// native Google Maps app (or its website) instead of one pin at a time.
+// Note: Google's free directions links support a limited number of stops
+// (historically ~9-10) — if a trip has more, only the first ones are used.
+function buildDirectionsLink(itemsWithAddress) {
+  const withAddress = itemsWithAddress.filter(i => i.address)
+  if (withAddress.length === 0) return null
+  const sortKey = i => {
+    const datePart = i.day_date || (i.check_in ? i.check_in.split('T')[0] : '') || ''
+    const timePart = i.start_time || (i.check_in ? (i.check_in.split('T')[1] || '00:00') : '00:00')
+    return `${datePart}T${timePart}`
+  }
+  const sorted = [...withAddress].sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
+  const addresses = sorted.map(i => encodeURIComponent(i.address))
+  if (addresses.length === 1) return mapsLink(sorted[0].address)
+  const origin = addresses[0]
+  const destination = addresses[addresses.length - 1]
+  const waypoints = addresses.slice(1, -1).slice(0, 8).join('|') // cap well under Google's practical limit
+  let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`
+  if (waypoints) url += `&waypoints=${waypoints}`
+  return url
+}
+
 function contrastTextColor(hex) {
   if (!hex || hex[0] !== '#' || hex.length < 7) return INK
   const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16)
@@ -301,9 +325,20 @@ function MapTab({ items }) {
   }
 
   const legendEntries = Object.entries(TYPE_CONFIG).filter(([k]) => k !== 'note' && k !== 'expense')
+  const directionsUrl = buildDirectionsLink(items)
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '520px', borderRadius: '24px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(28,25,23,0.06)' }}>
+    <>
+      {directionsUrl && (
+        <a href={directionsUrl} target="_blank" rel="noopener noreferrer" style={{
+          display: 'block', textAlign: 'center', textDecoration: 'none', marginBottom: '14px',
+          background: 'white', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', padding: '12px',
+          color: ACCENT_TEXT, fontSize: '13px', fontWeight: '700', fontFamily: FONT
+        }}>
+          🗺️ Open full route in Google Maps
+        </a>
+      )}
+      <div style={{ position: 'relative', width: '100%', height: '520px', borderRadius: '24px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(28,25,23,0.06)' }}>
       <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
       <div style={{ position: 'absolute', top: 12, left: 12, background: 'white', padding: '10px 14px', borderRadius: 14, boxShadow: '0 1px 8px rgba(0,0,0,0.15)', fontFamily: FONT }}>
         {legendEntries.map(([key, cfg]) => (
@@ -318,7 +353,8 @@ function MapTab({ items }) {
           Map couldn't load — check your API key and that Maps JavaScript + Places + Geocoding APIs are enabled.
         </div>
       )}
-    </div>
+      </div>
+    </>
   )
 }
 
@@ -359,6 +395,7 @@ function AddressInput({ value, onChange, onPlaceSelected, placeholder, style }) 
 
 function App() {
   const [user, setUser] = useState(null)
+  const editFormRef = useRef(null)
   const [isOnline, setIsOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine)
   const [providerToken, setProviderToken] = useState(null)
   const [trips, setTrips] = useState([])
@@ -789,7 +826,9 @@ function App() {
     setNewSelectedMembers(item.split_members || members.map(m => m.user_id))
     setNewCustomAmounts(item.custom_amounts || {})
     setActiveTab('plan')
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    setTimeout(() => {
+      editFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 50)
   }
 
   // Requires the 'calendar.events' scope granted at sign-in. Returns true/false
@@ -975,6 +1014,16 @@ function App() {
     resetItemForm()
     fetchItems(selectedTrip.id)
     fetchISplits(selectedTrip.id)
+  }
+
+  async function toggleItemStatus(item) {
+    if (!isOnline) { alert("You're offline — this requires a connection."); return }
+    const newStatusValue = item.status === 'suggested' ? 'booked' : 'suggested'
+    const label = newStatusValue === 'booked' ? 'Booked ✅' : 'Suggested 💡'
+    if (!window.confirm(`Mark "${item.title}" as ${label}?`)) return
+    const { error } = await supabase.from('itinerary_items').update({ status: newStatusValue }).eq('id', item.id)
+    if (error) { console.error('Failed to update status:', error); alert('Could not update status: ' + error.message); return }
+    fetchItems(selectedTrip.id)
   }
 
   async function deleteItem(itemId) {
@@ -1178,6 +1227,7 @@ function App() {
           (item.split_type === 'equal' && item.is_prepaid)
         if (!isForMe) return
       }
+      if (view === 'bookings' && item.status !== 'booked') return
       const timing = TYPE_CONFIG[item.type]?.timing || 'single'
       if (timing === 'stay' || timing === 'flight') {
         // Hotels/cars/flights get TWO timeline entries — one on the
@@ -1318,14 +1368,26 @@ function App() {
     // background regardless of category; booked items get their full
     // category color, with text color auto-picked for readability.
     const isSuggested = item.status === 'suggested'
-    const cardBg = coloredBg ? (isSuggested ? '#EFE9E2' : borderColor) : 'white'
+    const cardBg = coloredBg ? (isSuggested ? ACCENT_LIGHT : borderColor) : 'white'
     const textColor = coloredBg ? contrastTextColor(cardBg) : INK
     const mutedTextColor = coloredBg ? (textColor === '#FFFFFF' ? 'rgba(255,255,255,0.8)' : 'rgba(28,25,23,0.65)') : MUTED
 
+    // Long-press (press and hold ~550ms) on an Itinerary card toggles it
+    // between Suggested and Booked — a quick shortcut so confirming a
+    // suggestion doesn't require opening the full edit form.
+    let pressTimer = null
+    const longPressHandlers = (coloredBg && !isBooking) ? {
+      onPointerDown: () => { pressTimer = setTimeout(() => toggleItemStatus(item), 550) },
+      onPointerUp: () => clearTimeout(pressTimer),
+      onPointerLeave: () => clearTimeout(pressTimer),
+      onPointerCancel: () => clearTimeout(pressTimer),
+    } : {}
+
     return (
-      <div key={key} style={{
+      <div key={key} {...longPressHandlers} style={{
         background: cardBg, borderRadius: '20px', padding: '18px 20px', marginBottom: '14px',
         boxShadow: '0 1px 3px rgba(28,25,23,0.05)', position: 'relative',
+        touchAction: longPressHandlers.onPointerDown ? 'manipulation' : undefined,
         ...(coloredBg ? {} : { borderLeft: `4px solid ${borderColor}` })
       }}>
         {!isBooking && siblings && siblings.length > 1 && (
@@ -1574,9 +1636,9 @@ function App() {
                 {syncingCalendar ? 'Syncing…' : '📅 Sync my Calendar'}
               </button>
               <div style={{ background: '#F0EFEA', borderRadius: '14px', padding: '4px', display: 'flex', gap: '4px', marginBottom: '28px' }}>
-                {['group', 'personal', 'suggestions'].map(view => (
+                {['group', 'personal', 'bookings', 'suggestions'].map(view => (
                   <button key={view} onClick={() => setMasterView(view)} style={subToggleStyle(masterView === view)}>
-                    {view === 'group' ? 'Group view' : view === 'personal' ? 'My view' : 'Suggestions'}
+                    {view === 'group' ? 'Group view' : view === 'personal' ? 'My view' : view === 'bookings' ? 'Bookings' : 'Suggestions'}
                   </button>
                 ))}
               </div>
@@ -1611,7 +1673,7 @@ function App() {
               ) : masterDates.length === 0 && masterTimeline.undated.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 24px', color: MUTED, fontSize: '14px', background: 'white', borderRadius: '24px' }}>
                   <div style={{ fontSize: '32px', marginBottom: '12px' }}>🗺️</div>
-                  {masterView === 'personal' ? 'Nothing assigned to you yet.' : 'No itinerary or bookings yet — add items to get started!'}
+                  {masterView === 'personal' ? 'Nothing assigned to you yet.' : masterView === 'bookings' ? 'Nothing booked yet — confirmed items will show up here.' : 'No itinerary or bookings yet — add items to get started!'}
                 </div>
               ) : (
                 <>
@@ -1625,7 +1687,7 @@ function App() {
                     const plannedInDay = masterGrouped[date].filter(i => !isUntimedSuggestion(i))
                     const suggestedInDay = masterGrouped[date].filter(i => isUntimedSuggestion(i))
                     return (
-                      <div key={date} style={{ marginBottom: '28px' }}>
+                      <div key={date} style={{ marginBottom: '28px', paddingBottom: '4px', borderBottom: '3px solid #4A1F30' }}>
                         <h3 style={{ fontSize: '22px', fontWeight: '800', color: '#4A1F30', margin: '0 0 14px', textAlign: 'left', paddingBottom: '8px', borderBottom: '2px solid #4A1F30' }}>{formatDate(date)}</h3>
                         {plannedInDay.map((item, idx) => renderCard(item, `${date}-planned-${idx}`, true, plannedInDay))}
                         {suggestedInDay.length > 0 && (
@@ -1644,7 +1706,7 @@ function App() {
 
           {activeTab === 'plan' && (
             <>
-              <div style={{ background: 'white', borderRadius: '24px', padding: '24px', marginBottom: '28px', boxShadow: '0 1px 3px rgba(28,25,23,0.05)' }}>
+              <div ref={editFormRef} style={{ background: 'white', borderRadius: '24px', padding: '24px', marginBottom: '28px', boxShadow: '0 1px 3px rgba(28,25,23,0.05)' }}>
                 <h2 style={{ fontSize: '18px', fontWeight: '800', color: INK, margin: '0 0 16px' }}>
                   {editingItem ? '✏️ Edit item' : '＋ Add to trip'}
                 </h2>
