@@ -3,10 +3,11 @@ import { supabase } from './supabase'
 import { Capacitor } from '@capacitor/core'
 import { Browser } from '@capacitor/browser'
 import { App as CapacitorApp } from '@capacitor/app'
+import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics'
 import {
   Map, ClipboardList, Globe, Wallet, Waves, UtensilsCrossed, Ticket, Hotel,
   Car, Plane, StickyNote, Pencil, X, MapPin, Link2, ArrowLeft, CalendarDays,
-  ChevronUp, ChevronDown, Wifi, WifiOff, Users, User, Lightbulb, CheckCircle2, Package
+  ChevronUp, ChevronDown, Wifi, WifiOff, Users, User, Lightbulb, CheckCircle2, Package, Plus
 } from 'lucide-react'
 
 // ---------- Palette: minimal but fun — one vivid accent, clean sans everywhere ----------
@@ -205,6 +206,18 @@ function buildDirectionsLink(itemsWithAddress) {
   let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`
   if (waypoints) url += `&waypoints=${waypoints}`
   return url
+}
+
+// Fires a native haptic tap on iOS/Android; silently does nothing on web,
+// since there's no physical device to vibrate.
+function haptic(kind = 'light') {
+  if (!Capacitor.isNativePlatform()) return
+  try {
+    if (kind === 'success') Haptics.notification({ type: NotificationType.Success })
+    else if (kind === 'warning') Haptics.notification({ type: NotificationType.Warning })
+    else if (kind === 'medium') Haptics.impact({ style: ImpactStyle.Medium })
+    else Haptics.impact({ style: ImpactStyle.Light })
+  } catch {}
 }
 
 function contrastTextColor(hex) {
@@ -440,6 +453,7 @@ function App() {
   const [masterView, setMasterView] = useState('group')
   const [selectedDay, setSelectedDay] = useState(null)
   const [geoCache, setGeoCache] = useState({})
+  const [modal, setModal] = useState(null) // { title, message, confirmLabel, danger, onConfirm } — onConfirm absent = info-only (OK button)
   const [tripName, setTripName] = useState('')
   const [destination, setDestination] = useState('')
   const [startDate, setStartDate] = useState('')
@@ -806,15 +820,43 @@ function App() {
     setLocalCurrency('USD')
   }
 
+  function showConfirm({ title, message, confirmLabel = 'Confirm', danger = false, onConfirm }) {
+    setModal({ title, message, confirmLabel, danger, onConfirm })
+  }
+  function showInfo({ title, message }) {
+    setModal({ title, message, onConfirm: null })
+  }
+  function closeModal() { setModal(null) }
+
+  function renderModal() {
+    if (!modal) return null
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(28,25,23,0.5)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }} onClick={closeModal}>
+        <div onClick={e => e.stopPropagation()} style={{ background: 'white', borderRadius: '20px', padding: '24px', maxWidth: '360px', width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', fontFamily: FONT }}>
+          {modal.title && <h3 style={{ fontSize: '18px', fontWeight: '800', color: INK, margin: '0 0 8px' }}>{modal.title}</h3>}
+          <p style={{ fontSize: '14px', color: '#57534e', margin: '0 0 20px', lineHeight: 1.5, whiteSpace: 'pre-line' }}>{modal.message}</p>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            {modal.onConfirm && (
+              <button onClick={() => { haptic('light'); closeModal() }} style={{ flex: 1, padding: '12px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', background: 'white', color: '#57534e', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+            )}
+            <button onClick={() => { const cb = modal.onConfirm; haptic(modal.danger ? 'warning' : 'medium'); closeModal(); if (cb) cb() }} style={{ flex: 1, padding: '12px', border: 'none', borderRadius: '14px', background: modal.danger ? '#C2492E' : ACCENT, color: 'white', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>
+              {modal.onConfirm ? modal.confirmLabel : 'OK'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   async function createTrip() {
     if (!tripName || !destination) return
-    if (!isOnline) { alert("You're offline — trips can't be created or edited until you're back online."); return }
+    if (!isOnline) { showInfo({ title: "You're offline", message: "Trips can't be created or edited until you're back online." }); return }
     if (editingTrip) {
       const { error } = await supabase.from('trips').update({
         name: tripName, destination, start_date: startDate || null, end_date: endDate || null, timezone,
         local_currency: localCurrency
       }).eq('id', editingTrip.id)
-      if (error) { console.error('Failed to update trip:', error); alert('Could not save changes: ' + error.message); return }
+      if (error) { console.error('Failed to update trip:', error); showInfo({ title: 'Could not save changes', message: error.message }); return }
       cancelEditTrip()
       fetchTrips()
       return
@@ -823,7 +865,7 @@ function App() {
       name: tripName, destination, start_date: startDate || null, end_date: endDate || null,
       timezone, local_currency: localCurrency, created_by: user.id
     }).select().single()
-    if (error) { console.error('Failed to create trip:', error); alert('Could not create trip: ' + error.message); return }
+    if (error) { console.error('Failed to create trip:', error); showInfo({ title: 'Could not create trip', message: error.message }); return }
     if (data) {
       await supabase.from('trip_members').insert({ trip_id: data.id, user_id: user.id, role: 'owner' })
       setTripName(''); setDestination(''); setStartDate(''); setEndDate(''); setLocalCurrency('USD')
@@ -832,14 +874,21 @@ function App() {
   }
 
   async function deleteTrip(tripId) {
-    if (!isOnline) { alert("You're offline — deleting a trip requires a connection."); return }
-    if (!window.confirm('Delete this trip and all its items? This cannot be undone.')) return
-    await supabase.from('itinerary_items').delete().eq('trip_id', tripId)
-    await supabase.from('bookings').delete().eq('trip_id', tripId)
-    await supabase.from('trip_members').delete().eq('trip_id', tripId)
-    await supabase.from('invites').delete().eq('trip_id', tripId)
-    await supabase.from('trips').delete().eq('id', tripId)
-    fetchTrips()
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Deleting a trip requires a connection.' }); return }
+    showConfirm({
+      title: 'Delete this trip?',
+      message: 'This deletes the trip and everything in it — permanently.',
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        await supabase.from('itinerary_items').delete().eq('trip_id', tripId)
+        await supabase.from('bookings').delete().eq('trip_id', tripId)
+        await supabase.from('trip_members').delete().eq('trip_id', tripId)
+        await supabase.from('invites').delete().eq('trip_id', tripId)
+        await supabase.from('trips').delete().eq('id', tripId)
+        fetchTrips()
+      }
+    })
   }
 
   function getItemSplitMembers() {
@@ -962,7 +1011,7 @@ function App() {
   // once the API call has actually succeeded.
   async function syncMyCalendar() {
     if (!providerToken) {
-      alert('Calendar access not granted yet. Sign out and back in, and approve calendar access when Google asks.')
+      showInfo({ title: 'Calendar access needed', message: 'Sign out and back in, and approve calendar access when Google asks.' })
       return
     }
     setSyncingCalendar(true)
@@ -984,17 +1033,19 @@ function App() {
     let msg = `Added ${synced} item${synced === 1 ? '' : 's'} to your Google Calendar.`
     if (skipped > 0) msg += ` (${skipped} already synced previously.)`
     if (failed > 0) msg += ` ⚠️ ${failed} failed — check the browser console for the exact error.`
-    alert(msg)
+    haptic(failed > 0 ? 'warning' : 'success')
+    showInfo({ title: 'Calendar sync', message: msg })
   }
 
   async function saveItem() {
     if (!newTitle) return
-    if (!isOnline) { alert("You're offline — this will save once you're back online. Hold onto your changes for now."); return }
+    if (!isOnline) { showInfo({ title: "You're offline", message: "This will save once you're back online. Hold onto your changes for now." }); return }
     try {
-      await saveItemInner()
+      const ok = await saveItemInner()
+      if (ok) haptic('success')
     } catch (err) {
       console.error('Unexpected error while saving item:', err)
-      alert('Something went wrong saving this item: ' + (err?.message || 'unknown error') + '\n\nCheck the console for details.')
+      showInfo({ title: 'Something went wrong', message: (err?.message || 'unknown error') + '\n\nCheck the console for details.' })
     }
   }
 
@@ -1035,8 +1086,8 @@ function App() {
       console.log('[saveItem] update result, error=', updateError)
       if (updateError) {
         console.error('Failed to update item:', updateError)
-        alert('Could not save changes: ' + updateError.message)
-        return
+        showInfo({ title: 'Could not save changes', message: updateError.message })
+        return false
       }
       await supabase.from('itinerary_splits').delete().eq('item_id', editingItem.id)
       if (newIsPrepaid && cost && splitMembersToRecord.length > 0) {
@@ -1056,8 +1107,8 @@ function App() {
       console.log('[saveItem] insert result, newItem=', newItem, 'error=', error)
       if (error) {
         console.error('Failed to add item:', error)
-        alert('Could not add item: ' + error.message)
-        return
+        showInfo({ title: 'Could not add item', message: error.message })
+        return false
       }
       if (newItem && newIsPrepaid && cost && splitMembersToRecord.length > 0) {
         const { error: splitError } = await supabase.from('itinerary_splits').insert(splitMembersToRecord.map(uid => ({
@@ -1073,46 +1124,61 @@ function App() {
     resetItemForm()
     fetchItems(selectedTrip.id)
     fetchISplits(selectedTrip.id)
+    return true
   }
 
   async function toggleItemStatus(item) {
-    if (!isOnline) { alert("You're offline — this requires a connection."); return }
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'This requires a connection.' }); return }
     const newStatusValue = item.status === 'suggested' ? 'booked' : 'suggested'
-    const label = newStatusValue === 'booked' ? 'Booked ✅' : 'Suggested 💡'
-    if (!window.confirm(`Mark "${item.title}" as ${label}?`)) return
-    const { error } = await supabase.from('itinerary_items').update({ status: newStatusValue }).eq('id', item.id)
-    if (error) { console.error('Failed to update status:', error); alert('Could not update status: ' + error.message); return }
-    fetchItems(selectedTrip.id)
+    const label = newStatusValue === 'booked' ? 'Booked' : 'Suggested'
+    showConfirm({
+      title: `Mark as ${label}?`,
+      message: `"${item.title}" will be marked as ${label}.`,
+      confirmLabel: `Mark ${label}`,
+      onConfirm: async () => {
+        const { error } = await supabase.from('itinerary_items').update({ status: newStatusValue }).eq('id', item.id)
+        if (error) { console.error('Failed to update status:', error); showInfo({ title: 'Could not update status', message: error.message }); return }
+        haptic('success')
+        fetchItems(selectedTrip.id)
+      }
+    })
   }
 
   async function deleteItem(itemId) {
-    if (!isOnline) { alert("You're offline — deleting requires a connection."); return }
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Deleting requires a connection.' }); return }
     const item = items.find(i => i.id === itemId)
     const confirmMsg = item?.google_event_id
-      ? `Delete "${item.title}"? This will also remove it from your Google Calendar.`
-      : `Delete "${item?.title || 'this item'}"?`
-    if (!window.confirm(confirmMsg)) return
-    if (item?.google_event_id && providerToken) {
-      try {
-        await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${item.google_event_id}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${providerToken}` }
-        })
-      } catch (err) {
-        console.error('Failed to remove calendar event:', err)
+      ? `This will also remove it from your Google Calendar.`
+      : `This can't be undone.`
+    showConfirm({
+      title: `Delete "${item?.title || 'this item'}"?`,
+      message: confirmMsg,
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        if (item?.google_event_id && providerToken) {
+          try {
+            await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${item.google_event_id}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${providerToken}` }
+            })
+          } catch (err) {
+            console.error('Failed to remove calendar event:', err)
+          }
+        }
+        await supabase.from('itinerary_splits').delete().eq('item_id', itemId)
+        await supabase.from('itinerary_items').delete().eq('id', itemId)
+        fetchItems(selectedTrip.id)
+        fetchISplits(selectedTrip.id)
       }
-    }
-    await supabase.from('itinerary_splits').delete().eq('item_id', itemId)
-    await supabase.from('itinerary_items').delete().eq('id', itemId)
-    fetchItems(selectedTrip.id)
-    fetchISplits(selectedTrip.id)
+    })
   }
 
   // Swaps sort_order between an item and its neighbor within the same
   // subsection (a day's planned list, or a day's suggestions list), so
   // reordering never affects items elsewhere in the trip.
   async function moveItem(item, direction, siblings) {
-    if (!isOnline) { alert("You're offline — reordering requires a connection."); return }
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Reordering requires a connection.' }); return }
     const idx = siblings.findIndex(i => i.id === item.id)
     const targetIdx = direction === 'up' ? idx - 1 : idx + 1
     if (idx === -1 || targetIdx < 0 || targetIdx >= siblings.length) return
@@ -1123,6 +1189,7 @@ function App() {
       supabase.from('itinerary_items').update({ sort_order: neighborOrder }).eq('id', item.id),
       supabase.from('itinerary_items').update({ sort_order: itemOrder }).eq('id', neighbor.id),
     ])
+    haptic('light')
     fetchItems(selectedTrip.id)
   }
 
@@ -1144,7 +1211,7 @@ function App() {
   }
   async function saveExpense() {
     if (!expTitle || !expCost) return
-    if (!isOnline) { alert("You're offline — this will save once you're back online."); return }
+    if (!isOnline) { showInfo({ title: "You're offline", message: "This will save once you're back online." }); return }
     const cost = parseFloat(expCost)
     const splitMembers = getExpSplitMembers()
     const splitMembersToRecord = splitMembers.filter(uid => uid !== expPaidBy)
@@ -1157,7 +1224,8 @@ function App() {
       split_members: expSplitType === 'some' ? expSelectedMembers : null,
       custom_amounts: expSplitMethod === 'custom' ? expCustomAmounts : null
     }).select().single()
-    if (error) { console.error('Failed to add expense:', error); alert('Could not add expense: ' + error.message); return }
+    if (error) { console.error('Failed to add expense:', error); showInfo({ title: 'Could not add expense', message: error.message }); return }
+    haptic('success')
     if (newItem && splitMembersToRecord.length > 0) {
       const { error: splitError } = await supabase.from('itinerary_splits').insert(splitMembersToRecord.map(uid => ({
         item_id: newItem.id, user_id: uid,
@@ -1273,6 +1341,7 @@ function App() {
     }).map(s => s.id)
     if (bSplitIds.length > 0) await supabase.from('booking_splits').update({ paid: true, paid_at: new Date().toISOString() }).in('id', bSplitIds)
     if (iSplitIds.length > 0) await supabase.from('itinerary_splits').update({ paid: true, paid_at: new Date().toISOString() }).in('id', iSplitIds)
+    haptic('success')
     fetchSplits(selectedTrip.id)
     fetchISplits(selectedTrip.id)
   }
@@ -1415,21 +1484,14 @@ function App() {
     const ItemIcon = isBooking ? categoryIcon(item.category) : (TYPE_CONFIG[item.type]?.Icon || StickyNote)
     const subtitle = itemSubtitle(item, isBooking)
     const occurrenceLabel = (() => {
-      if (item._occurrence === 'checkin') return `${TYPE_CONFIG[item.type]?.inLabel || 'Check-in'}: `
-      if (item._occurrence === 'checkout') return `${TYPE_CONFIG[item.type]?.outLabel || 'Check-out'}: `
-      if (item._occurrence === 'depart') return 'Departs: '
-      if (item._occurrence === 'arrive') return 'Arrives: '
+      if (item._occurrence === 'checkin') return `${TYPE_CONFIG[item.type]?.inLabel || 'Check-in'}`
+      if (item._occurrence === 'checkout') return `${TYPE_CONFIG[item.type]?.outLabel || 'Check-out'}`
+      if (item._occurrence === 'depart') return 'Departs'
+      if (item._occurrence === 'arrive') return 'Arrives'
       return ''
     })()
     const showCost = !isBooking && item.is_prepaid && item.cost && item._occurrence !== 'checkout' && item._occurrence !== 'arrive'
-
-    // On the Itinerary tab, suggested (unconfirmed) items get a flat neutral
-    // background regardless of category; booked items get their full
-    // category color, with text color auto-picked for readability.
     const isSuggested = item.status === 'suggested'
-    const cardBg = coloredBg ? (isSuggested ? '#EFE9E2' : borderColor) : 'white'
-    const textColor = coloredBg ? contrastTextColor(cardBg) : INK
-    const mutedTextColor = coloredBg ? (textColor === '#FFFFFF' ? 'rgba(255,255,255,0.8)' : 'rgba(28,25,23,0.65)') : MUTED
 
     // Long-press (press and hold ~550ms) on an Itinerary card toggles it
     // between Suggested and Booked — a quick shortcut so confirming a
@@ -1442,55 +1504,138 @@ function App() {
       onPointerCancel: () => clearTimeout(pressTimer),
     } : {}
 
-    return (
-      <div key={key} {...longPressHandlers} style={{
-        background: cardBg, borderRadius: '20px', padding: '18px 20px', marginBottom: '14px',
-        boxShadow: '0 1px 3px rgba(28,25,23,0.05)', position: 'relative',
-        touchAction: longPressHandlers.onPointerDown ? 'manipulation' : undefined,
-        ...(coloredBg ? {} : { borderLeft: `4px solid ${borderColor}` })
-      }}>
-        {!isBooking && siblings && siblings.length > 1 && (
-          <div style={{ position: 'absolute', top: '14px', left: '16px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            <button onClick={() => moveItem(item, 'up', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7 }} title="Move up"><ChevronUp size={16} /></button>
-            <button onClick={() => moveItem(item, 'down', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7 }} title="Move down"><ChevronDown size={16} /></button>
-          </div>
-        )}
-        {!isBooking && (
-          <div style={{ position: 'absolute', top: '14px', right: '16px', display: 'flex', gap: '4px' }}>
-            <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.85 : 1 }} title="Edit"><Pencil size={16} /></button>
-            <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: coloredBg ? textColor : '#d6d3d1', opacity: coloredBg ? 0.6 : 1 }} title="Delete"><X size={16} /></button>
-          </div>
-        )}
-        <div style={{ paddingRight: isBooking ? 0 : '56px', paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '26px' : 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={{ width: '34px', height: '34px', borderRadius: '10px', background: coloredBg ? 'rgba(255,255,255,0.25)' : `${borderColor}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <ItemIcon size={18} color={coloredBg ? textColor : borderColor} />
+    if (!coloredBg) {
+      // Plain bordered-card style, used on Plan / Settle Up / legacy bookings.
+      const cardBg = 'white'
+      const textColor = INK
+      const mutedTextColor = MUTED
+      return (
+        <div key={key} style={{ background: cardBg, borderRadius: '20px', padding: '18px 20px', marginBottom: '14px', boxShadow: '0 1px 3px rgba(28,25,23,0.05)', position: 'relative', borderLeft: `4px solid ${borderColor}` }}>
+          {!isBooking && siblings && siblings.length > 1 && (
+            <div style={{ position: 'absolute', top: '14px', left: '16px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <button onClick={() => moveItem(item, 'up', siblings)} style={{ ...iconBtn, color: ACCENT, opacity: 0.7 }} title="Move up"><ChevronUp size={16} /></button>
+              <button onClick={() => moveItem(item, 'down', siblings)} style={{ ...iconBtn, color: ACCENT, opacity: 0.7 }} title="Move down"><ChevronDown size={16} /></button>
             </div>
-            <h3 style={{ fontWeight: '700', fontSize: '17px', color: textColor, margin: 0 }}>
-              {occurrenceLabel}{item.title}
-            </h3>
-            {item.address && (
-              <a href={mapsLink(item.address)} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', display: 'flex' }} title="Open in Google Maps">
-                <MapPin size={15} color={coloredBg ? textColor : ACCENT} />
-              </a>
+          )}
+          {!isBooking && (
+            <div style={{ position: 'absolute', top: '14px', right: '16px', display: 'flex', gap: '4px' }}>
+              <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: ACCENT }} title="Edit"><Pencil size={16} /></button>
+              <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: '#d6d3d1' }} title="Delete"><X size={16} /></button>
+            </div>
+          )}
+          <div style={{ paddingRight: isBooking ? 0 : '56px', paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '26px' : 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '34px', height: '34px', borderRadius: '10px', background: `${borderColor}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <ItemIcon size={18} color={borderColor} />
+              </div>
+              <h3 style={{ fontWeight: '700', fontSize: '17px', color: textColor, margin: 0 }}>
+                {occurrenceLabel ? `${occurrenceLabel}: ` : ''}{item.title}
+              </h3>
+              {item.address && (
+                <a href={mapsLink(item.address)} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', display: 'flex' }} title="Open in Google Maps">
+                  <MapPin size={15} color={ACCENT} />
+                </a>
+              )}
+            </div>
+            {subtitle && <p style={{ color: mutedTextColor, fontSize: '13px', margin: '4px 0 0' }}>{subtitle}</p>}
+            {item.confirmation && (
+              <p style={{ fontSize: '12px', color: mutedTextColor, margin: '4px 0 0' }}>Confirmation: <span style={{ fontFamily: 'monospace', color: ACCENT_TEXT }}>{item.confirmation}</span></p>
+            )}
+            {(item.traveler_name || item.traveler_user_id) && (
+              <p style={{ fontSize: '13px', color: ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
+            )}
+            {item.notes && (
+              <p style={{ fontSize: '13px', color: '#57534e', margin: '8px 0 0', background: '#FAFAF8', padding: '8px 12px', borderRadius: '10px' }}>{item.notes}</p>
+            )}
+            {showCost && (
+              <p style={{ fontSize: '12px', color: mutedTextColor, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <Wallet size={12} /> {item.cost} {item.cost_currency && item.cost_currency !== 'USD' ? item.cost_currency : ''}
+                {usdEquivalent(item.cost, item.cost_currency) && <span>&nbsp;(~${usdEquivalent(item.cost, item.cost_currency)} USD)</span>}
+              </p>
             )}
           </div>
-          {subtitle && <p style={{ color: mutedTextColor, fontSize: '13px', margin: '4px 0 0' }}>{subtitle}</p>}
-          {item.confirmation && (
-            <p style={{ fontSize: '12px', color: mutedTextColor, margin: '4px 0 0' }}>Confirmation: <span style={{ fontFamily: 'monospace', color: coloredBg ? textColor : ACCENT_TEXT }}>{item.confirmation}</span></p>
+        </div>
+      )
+    }
+
+    // Itinerary tab: white-card timeline style — a colored icon node connected
+    // by a line, with the card itself always white and a colored category
+    // label instead of a tinted background.
+    const nodeColor = isSuggested ? MUTED : borderColor
+    const idxInSiblings = siblings ? siblings.findIndex(i => i.id === item.id && i._occurrence === item._occurrence) : -1
+    const isLastNode = !siblings || idxInSiblings === -1 || idxInSiblings === siblings.length - 1
+    const categoryLabel = isSuggested ? 'Suggestion' : (isBooking ? (item.category || 'Booking') : (TYPE_CONFIG[item.type]?.label || 'Item'))
+
+    return (
+      <div key={key} style={{ display: 'flex', gap: '10px', alignItems: 'stretch' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '36px', flexShrink: 0 }}>
+          <div style={{
+            width: '36px', height: '36px', borderRadius: '50%', flexShrink: 0,
+            background: isSuggested ? '#EFE9E2' : `${nodeColor}22`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            border: '2px solid white', boxShadow: '0 1px 3px rgba(28,25,23,0.1)'
+          }}>
+            <ItemIcon size={16} color={nodeColor} />
+          </div>
+          {!isLastNode && <div style={{ width: '2px', flex: 1, background: CARD_BORDER, marginTop: '4px', minHeight: '20px' }} />}
+        </div>
+        <div {...longPressHandlers} style={{
+          flex: 1, background: 'white', borderRadius: '18px', padding: '14px 16px', marginBottom: '16px',
+          boxShadow: '0 1px 3px rgba(28,25,23,0.06)', position: 'relative',
+          touchAction: longPressHandlers.onPointerDown ? 'manipulation' : undefined
+        }}>
+          {!isBooking && siblings && siblings.length > 1 && (
+            <div style={{ position: 'absolute', top: '12px', left: '10px', display: 'flex', flexDirection: 'column', gap: '0' }}>
+              <button onClick={() => moveItem(item, 'up', siblings)} style={{ ...iconBtn, color: ACCENT, opacity: 0.6, padding: '2px' }} title="Move up"><ChevronUp size={14} /></button>
+              <button onClick={() => moveItem(item, 'down', siblings)} style={{ ...iconBtn, color: ACCENT, opacity: 0.6, padding: '2px' }} title="Move down"><ChevronDown size={14} /></button>
+            </div>
           )}
-          {(item.traveler_name || item.traveler_user_id) && (
-            <p style={{ fontSize: '13px', color: coloredBg ? textColor : ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
+          {!isBooking && (
+            <div style={{ position: 'absolute', top: '12px', right: '12px', display: 'flex', gap: '2px', alignItems: 'center' }}>
+              {isSuggested && (
+                <button onClick={() => toggleItemStatus(item)} title="Add to itinerary" style={{
+                  width: '26px', height: '26px', borderRadius: '50%', border: 'none', background: ACCENT,
+                  color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }}>
+                  <Plus size={15} />
+                </button>
+              )}
+              <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: ACCENT }} title="Edit"><Pencil size={15} /></button>
+              <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: '#d6d3d1' }} title="Delete"><X size={15} /></button>
+            </div>
           )}
-          {item.notes && (
-            <p style={{ fontSize: '13px', color: coloredBg ? textColor : '#57534e', margin: '8px 0 0', background: coloredBg ? 'rgba(255,255,255,0.15)' : '#FAFAF8', padding: '8px 12px', borderRadius: '10px' }}>{item.notes}</p>
-          )}
-          {showCost && (
-            <p style={{ fontSize: '12px', color: mutedTextColor, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <Wallet size={12} /> {item.cost} {item.cost_currency && item.cost_currency !== 'USD' ? item.cost_currency : ''}
-              {usdEquivalent(item.cost, item.cost_currency) && <span>&nbsp;(~${usdEquivalent(item.cost, item.cost_currency)} USD)</span>}
-            </p>
-          )}
+          <div style={{ paddingRight: isBooking ? 0 : (isSuggested ? '92px' : '64px'), paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '20px' : 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
+              <span style={{ fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.07em', color: nodeColor }}>{categoryLabel}</span>
+              {occurrenceLabel && (
+                <span style={{ fontSize: '10px', fontWeight: '700', color: ACCENT_TEXT, background: ACCENT_LIGHT, padding: '2px 7px', borderRadius: '999px' }}>{occurrenceLabel}</span>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h3 style={{ fontWeight: '700', fontSize: '16px', color: INK, margin: 0 }}>{item.title}</h3>
+              {item.address && (
+                <a href={mapsLink(item.address)} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', display: 'flex' }} title="Open in Google Maps">
+                  <MapPin size={14} color={ACCENT} />
+                </a>
+              )}
+            </div>
+            {subtitle && <p style={{ color: MUTED, fontSize: '13px', margin: '4px 0 0' }}>{subtitle}</p>}
+            {item.confirmation && (
+              <p style={{ fontSize: '12px', color: MUTED, margin: '4px 0 0' }}>Confirmation: <span style={{ fontFamily: 'monospace', color: ACCENT_TEXT }}>{item.confirmation}</span></p>
+            )}
+            {(item.traveler_name || item.traveler_user_id) && (
+              <p style={{ fontSize: '13px', color: ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
+            )}
+            {item.notes && (
+              <p style={{ fontSize: '13px', color: '#57534e', margin: '8px 0 0', background: '#FAFAF8', padding: '8px 12px', borderRadius: '10px' }}>{item.notes}</p>
+            )}
+            {showCost && (
+              <p style={{ fontSize: '12px', color: MUTED, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <Wallet size={12} /> {item.cost} {item.cost_currency && item.cost_currency !== 'USD' ? item.cost_currency : ''}
+                {usdEquivalent(item.cost, item.cost_currency) && <span>&nbsp;(~${usdEquivalent(item.cost, item.cost_currency)} USD)</span>}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -2178,7 +2323,7 @@ function App() {
           ].map(tab => {
             const isActive = activeTab === tab.key
             return (
-              <button key={tab.key} onClick={() => setActiveTab(tab.key)} style={{
+              <button key={tab.key} onClick={() => { haptic('light'); setActiveTab(tab.key) }} style={{
                 background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT,
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
                 padding: '6px 14px', borderRadius: '16px',
@@ -2191,6 +2336,7 @@ function App() {
             )
           })}
         </nav>
+        {renderModal()}
       </div>
     )
   }
@@ -2288,12 +2434,13 @@ function App() {
                   </p>
                 )}
               </div>
-              <button onClick={e => { e.stopPropagation(); deleteTrip(trip.id) }} style={{ position: 'absolute', top: '14px', left: '14px', background: 'none', border: 'none', color: 'rgba(255,255,255,0.85)', fontSize: '16px', cursor: 'pointer', padding: '4px', lineHeight: 1 }} title="Delete trip">✕</button>
-              <button onClick={e => { e.stopPropagation(); startEditTrip(trip) }} style={{ position: 'absolute', top: '14px', right: '14px', background: 'none', border: 'none', color: 'rgba(255,255,255,0.85)', fontSize: '16px', cursor: 'pointer', padding: '4px', lineHeight: 1 }} title="Edit trip">✏️</button>
+              <button onClick={e => { e.stopPropagation(); deleteTrip(trip.id) }} style={{ position: 'absolute', top: '14px', left: '14px', background: 'none', border: 'none', color: 'rgba(255,255,255,0.85)', cursor: 'pointer', padding: '4px', lineHeight: 1, display: 'flex' }} title="Delete trip"><X size={18} /></button>
+              <button onClick={e => { e.stopPropagation(); startEditTrip(trip) }} style={{ position: 'absolute', top: '14px', right: '14px', background: 'none', border: 'none', color: 'rgba(255,255,255,0.85)', cursor: 'pointer', padding: '4px', lineHeight: 1, display: 'flex' }} title="Edit trip"><Pencil size={18} /></button>
             </div>
           ))
         )}
       </div>
+      {renderModal()}
     </div>
   )
 }
