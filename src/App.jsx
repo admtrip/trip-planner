@@ -3,6 +3,11 @@ import { supabase } from './supabase'
 import { Capacitor } from '@capacitor/core'
 import { Browser } from '@capacitor/browser'
 import { App as CapacitorApp } from '@capacitor/app'
+import {
+  Map, ClipboardList, Globe, Wallet, Waves, UtensilsCrossed, Ticket, Hotel,
+  Car, Plane, StickyNote, Pencil, X, MapPin, Link2, ArrowLeft, CalendarDays,
+  ChevronUp, ChevronDown, Wifi, WifiOff, Users, User, Lightbulb, CheckCircle2, Package
+} from 'lucide-react'
 
 // ---------- Palette: minimal but fun — one vivid accent, clean sans everywhere ----------
 const ACCENT = '#7A3350'
@@ -75,14 +80,14 @@ const CURRENCIES = [
 ]
 
 const TYPE_CONFIG = {
-  activity:  { label: '🏄 Activity',      color: CAT_ACTIVITY,  timing: 'single', confirmation: false },
-  food:      { label: '🍽️ Food & Drinks', color: CAT_FOOD,      timing: 'single', confirmation: false },
-  excursion: { label: '🎟️ Excursion',     color: CAT_EXCURSION, timing: 'single', confirmation: true  },
-  hotel:     { label: '🏨 Hotel',         color: CAT_HOTEL,     timing: 'stay',   confirmation: true, inLabel: 'Check-in',  outLabel: 'Check-out' },
-  car:       { label: '🚗 Car Rental',    color: CAT_CAR,       timing: 'stay',   confirmation: true, inLabel: 'Pickup',    outLabel: 'Return'     },
-  flight:    { label: '✈️ Flight',        color: CAT_FLIGHT,    timing: 'flight', confirmation: true  },
-  note:      { label: '📝 Note',          color: MUTED,         timing: 'single', confirmation: false },
-  expense:   { label: '💵 Expense',       color: CAT_FOOD,      timing: 'none',   confirmation: false },
+  activity:  { label: 'Activity',      Icon: Waves,           color: CAT_ACTIVITY,  timing: 'single', confirmation: false },
+  food:      { label: 'Food & Drinks', Icon: UtensilsCrossed, color: CAT_FOOD,      timing: 'single', confirmation: false },
+  excursion: { label: 'Excursion',     Icon: Ticket,          color: CAT_EXCURSION, timing: 'single', confirmation: true  },
+  hotel:     { label: 'Hotel',         Icon: Hotel,           color: CAT_HOTEL,     timing: 'stay',   confirmation: true, inLabel: 'Check-in',  outLabel: 'Check-out' },
+  car:       { label: 'Car Rental',    Icon: Car,             color: CAT_CAR,       timing: 'stay',   confirmation: true, inLabel: 'Pickup',    outLabel: 'Return'     },
+  flight:    { label: 'Flight',        Icon: Plane,           color: CAT_FLIGHT,    timing: 'flight', confirmation: true  },
+  note:      { label: 'Note',          Icon: StickyNote,      color: MUTED,         timing: 'single', confirmation: false },
+  expense:   { label: 'Expense',       Icon: Wallet,          color: CAT_FOOD,      timing: 'none',   confirmation: false },
 }
 
 function bookingBorderColor(booking, userId) {
@@ -93,7 +98,7 @@ function bookingBorderColor(booking, userId) {
 }
 
 function categoryIcon(cat) {
-  return { flight: '✈️', hotel: '🏨', car: '🚗', excursion: '🎟️', other: '📦' }[cat] || '📦'
+  return { flight: Plane, hotel: Hotel, car: Car, excursion: Ticket, other: Package }[cat] || Package
 }
 
 function formatDateTime(dt) {
@@ -319,7 +324,7 @@ function MapTab({ items }) {
             content: `<div style="font-family:${FONT};padding:2px 4px;min-width:140px;">
               <div style="font-weight:600;color:${INK};">${item.title}</div>
               <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:${color};margin-top:2px;">
-                ${TYPE_CONFIG[item.type]?.label.replace(/^[^ ]+ /, '') || item.type}
+                ${TYPE_CONFIG[item.type]?.label || item.type}
               </div>
               <a href="${mapsLink(item.address)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:8px;font-size:12px;color:${ACCENT_TEXT};text-decoration:none;">
                 📍 Open in Google Maps
@@ -374,7 +379,7 @@ function MapTab({ items }) {
         {legendEntries.map(([key, cfg]) => (
           <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: cfg.color, display: 'inline-block', flexShrink: 0 }} />
-            <span style={{ fontSize: 12, color: INK }}>{cfg.label.replace(/^[^ ]+ /, '')}</span>
+            <span style={{ fontSize: 12, color: INK }}>{cfg.label}</span>
           </div>
         ))}
       </div>
@@ -1407,7 +1412,7 @@ function App() {
   function renderCard(item, key, coloredBg = false, siblings = null) {
     const isBooking = item._source === 'booking'
     const borderColor = isBooking ? bookingBorderColor(item, user.id) : (TYPE_CONFIG[item.type]?.color || TEAL)
-    const icon = isBooking ? categoryIcon(item.category) : (TYPE_CONFIG[item.type]?.label.split(' ')[0] || '📝')
+    const ItemIcon = isBooking ? categoryIcon(item.category) : (TYPE_CONFIG[item.type]?.Icon || StickyNote)
     const subtitle = itemSubtitle(item, isBooking)
     const occurrenceLabel = (() => {
       if (item._occurrence === 'checkin') return `${TYPE_CONFIG[item.type]?.inLabel || 'Check-in'}: `
@@ -1446,24 +1451,27 @@ function App() {
       }}>
         {!isBooking && siblings && siblings.length > 1 && (
           <div style={{ position: 'absolute', top: '14px', left: '16px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            <button onClick={() => moveItem(item, 'up', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7, fontSize: '11px', padding: '2px 4px' }} title="Move up">▲</button>
-            <button onClick={() => moveItem(item, 'down', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7, fontSize: '11px', padding: '2px 4px' }} title="Move down">▼</button>
+            <button onClick={() => moveItem(item, 'up', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7 }} title="Move up"><ChevronUp size={16} /></button>
+            <button onClick={() => moveItem(item, 'down', siblings)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.75 : 0.7 }} title="Move down"><ChevronDown size={16} /></button>
           </div>
         )}
         {!isBooking && (
           <div style={{ position: 'absolute', top: '14px', right: '16px', display: 'flex', gap: '4px' }}>
-            <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.85 : 1 }} title="Edit">✏️</button>
-            <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: coloredBg ? textColor : '#d6d3d1', opacity: coloredBg ? 0.6 : 1 }} title="Delete">✕</button>
+            <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: coloredBg ? textColor : ACCENT, opacity: coloredBg ? 0.85 : 1 }} title="Edit"><Pencil size={16} /></button>
+            <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: coloredBg ? textColor : '#d6d3d1', opacity: coloredBg ? 0.6 : 1 }} title="Delete"><X size={16} /></button>
           </div>
         )}
         <div style={{ paddingRight: isBooking ? 0 : '56px', paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '26px' : 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ width: '34px', height: '34px', borderRadius: '10px', background: coloredBg ? 'rgba(255,255,255,0.25)' : `${borderColor}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <ItemIcon size={18} color={coloredBg ? textColor : borderColor} />
+            </div>
             <h3 style={{ fontWeight: '700', fontSize: '17px', color: textColor, margin: 0 }}>
-              {icon} {occurrenceLabel}{item.title}
+              {occurrenceLabel}{item.title}
             </h3>
             {item.address && (
-              <a href={mapsLink(item.address)} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', fontSize: '15px' }} title="Open in Google Maps">
-                📍
+              <a href={mapsLink(item.address)} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', display: 'flex' }} title="Open in Google Maps">
+                <MapPin size={15} color={coloredBg ? textColor : ACCENT} />
               </a>
             )}
           </div>
@@ -1472,15 +1480,15 @@ function App() {
             <p style={{ fontSize: '12px', color: mutedTextColor, margin: '4px 0 0' }}>Confirmation: <span style={{ fontFamily: 'monospace', color: coloredBg ? textColor : ACCENT_TEXT }}>{item.confirmation}</span></p>
           )}
           {(item.traveler_name || item.traveler_user_id) && (
-            <p style={{ fontSize: '13px', color: coloredBg ? textColor : ACCENT_TEXT, margin: '4px 0 0' }}>👤 {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
+            <p style={{ fontSize: '13px', color: coloredBg ? textColor : ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
           )}
           {item.notes && (
             <p style={{ fontSize: '13px', color: coloredBg ? textColor : '#57534e', margin: '8px 0 0', background: coloredBg ? 'rgba(255,255,255,0.15)' : '#FAFAF8', padding: '8px 12px', borderRadius: '10px' }}>{item.notes}</p>
           )}
           {showCost && (
-            <p style={{ fontSize: '12px', color: mutedTextColor, margin: '8px 0 0' }}>
-              💵 {item.cost} {item.cost_currency && item.cost_currency !== 'USD' ? item.cost_currency : ''}
-              {usdEquivalent(item.cost, item.cost_currency) && <span> (~${usdEquivalent(item.cost, item.cost_currency)} USD)</span>}
+            <p style={{ fontSize: '12px', color: mutedTextColor, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <Wallet size={12} /> {item.cost} {item.cost_currency && item.cost_currency !== 'USD' ? item.cost_currency : ''}
+              {usdEquivalent(item.cost, item.cost_currency) && <span>&nbsp;(~${usdEquivalent(item.cost, item.cost_currency)} USD)</span>}
             </p>
           )}
         </div>
@@ -1635,13 +1643,29 @@ function App() {
     return (
       <div style={{ minHeight: '100vh', background: BG, fontFamily: FONT }}>
         <div style={{ background: BG_GRADIENT, padding: 'max(48px, calc(20px + env(safe-area-inset-top))) 24px 32px', position: 'relative' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
             <button onClick={() => { setSelectedTrip(null); setActiveTab('master') }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.85)', fontSize: '14px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontFamily: FONT }}>
-              ← Back
+              <ArrowLeft size={16} /> Back
             </button>
-            <button onClick={() => generateInviteLink(selectedTrip.id)} style={{ padding: '8px 16px', border: '1px solid rgba(255,255,255,0.35)', borderRadius: '999px', background: 'rgba(255,255,255,0.18)', backdropFilter: 'blur(4px)', color: 'white', fontSize: '13px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>
-              {copiedId === selectedTrip.id ? '✅ Copied!' : '🔗 Invite'}
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+              <button onClick={() => generateInviteLink(selectedTrip.id)} style={{ padding: '8px 16px', border: '1px solid rgba(255,255,255,0.35)', borderRadius: '999px', background: 'rgba(255,255,255,0.18)', backdropFilter: 'blur(4px)', color: 'white', fontSize: '13px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {copiedId === selectedTrip.id ? <><CheckCircle2 size={15} /> Copied!</> : <><Link2 size={15} /> Invite</>}
+              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span title={isOnline ? 'Online' : "Offline — showing your last saved data"} style={{ display: 'flex' }}>
+                  {isOnline ? <Wifi size={16} color="rgba(255,255,255,0.65)" /> : <WifiOff size={16} color="#FFD3D3" />}
+                </span>
+                {activeTab === 'master' && (
+                  <button onClick={syncMyCalendar} disabled={syncingCalendar} title={syncingCalendar ? 'Syncing…' : 'Sync my Calendar'} style={{
+                    width: '30px', height: '30px', borderRadius: '50%', border: '1px solid rgba(255,255,255,0.35)',
+                    background: 'rgba(255,255,255,0.18)', color: 'white', cursor: syncingCalendar ? 'default' : 'pointer',
+                    opacity: syncingCalendar ? 0.6 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  }}>
+                    <CalendarDays size={15} />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
           <h1 style={{ fontSize: '36px', fontWeight: '800', color: 'white', margin: 0, textAlign: 'center' }}>{selectedTrip.name}</h1>
           {members.length > 0 && (
@@ -1664,30 +1688,10 @@ function App() {
           )}
         </div>
 
-        <div style={{ maxWidth: '560px', margin: '-20px auto 0', padding: '0 20px 40px', position: 'relative', zIndex: 10 }}>
-
-          {!isOnline && (
-            <div style={{ background: '#3A3530', color: 'white', borderRadius: '14px', padding: '10px 16px', marginBottom: '16px', fontSize: '13px', fontWeight: '600', textAlign: 'center' }}>
-              📡 You're offline — showing your last saved trip. Changes won't save until you're back online.
-            </div>
-          )}
-
-          <div style={{ background: 'white', borderRadius: '20px', padding: '6px', boxShadow: '0 8px 24px rgba(28,25,23,0.1)', display: 'flex', gap: '4px', marginBottom: '20px' }}>
-            <button style={tabStyle(activeTab === 'master')} onClick={() => setActiveTab('master')}>🗺️ Itinerary</button>
-            <button style={tabStyle(activeTab === 'plan')} onClick={() => setActiveTab('plan')}>📝 Plan</button>
-            <button style={tabStyle(activeTab === 'map')} onClick={() => setActiveTab('map')}>🌐 Map</button>
-            <button style={tabStyle(activeTab === 'settleup')} onClick={() => setActiveTab('settleup')}>💰 Settle Up</button>
-          </div>
+        <div style={{ maxWidth: '560px', margin: '-20px auto 0', padding: '0 20px 100px', position: 'relative', zIndex: 10 }}>
 
           {activeTab === 'master' && (
             <>
-              <button onClick={syncMyCalendar} disabled={syncingCalendar} style={{
-                width: '100%', padding: '12px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px',
-                background: 'white', color: ACCENT_TEXT, fontSize: '13px', fontWeight: '700', cursor: syncingCalendar ? 'default' : 'pointer',
-                fontFamily: FONT, marginBottom: '14px', opacity: syncingCalendar ? 0.6 : 1
-              }}>
-                {syncingCalendar ? 'Syncing…' : '📅 Sync my Calendar'}
-              </button>
               <div style={{ background: '#F0EFEA', borderRadius: '14px', padding: '4px', display: 'flex', gap: '4px', marginBottom: '28px' }}>
                 {['group', 'personal', 'bookings', 'suggestions'].map(view => (
                   <button key={view} onClick={() => setMasterView(view)} style={subToggleStyle(masterView === view)}>
@@ -2159,6 +2163,34 @@ function App() {
             </>
           )}
         </div>
+
+        <nav style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0, background: 'white',
+          display: 'flex', justifyContent: 'space-around', alignItems: 'center',
+          padding: `8px 8px calc(10px + env(safe-area-inset-bottom))`,
+          boxShadow: '0 -4px 12px rgba(0,0,0,0.08)', zIndex: 20
+        }}>
+          {[
+            { key: 'master', label: 'Itinerary', Icon: Map },
+            { key: 'plan', label: 'Plan', Icon: ClipboardList },
+            { key: 'map', label: 'Map', Icon: Globe },
+            { key: 'settleup', label: 'Settle', Icon: Wallet },
+          ].map(tab => {
+            const isActive = activeTab === tab.key
+            return (
+              <button key={tab.key} onClick={() => setActiveTab(tab.key)} style={{
+                background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
+                padding: '6px 14px', borderRadius: '16px',
+                backgroundColor: isActive ? ACCENT_LIGHT : 'transparent',
+                opacity: isActive ? 1 : 0.6, transition: 'all 0.15s'
+              }}>
+                <tab.Icon size={20} color={isActive ? ACCENT_DARK : MUTED} />
+                <span style={{ fontSize: '11px', fontWeight: isActive ? '700' : '500', color: isActive ? ACCENT_DARK : MUTED }}>{tab.label}</span>
+              </button>
+            )
+          })}
+        </nav>
       </div>
     )
   }
