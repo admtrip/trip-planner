@@ -1,0 +1,9 @@
+{
+  "appId": "com.aditi.trippy",
+  "appName": "Trippy",
+  "webDir": "dist",
+  "backgroundColor": "#4A1F30",
+  "ios": {
+    "contentInset": "automatic"
+  }
+}
