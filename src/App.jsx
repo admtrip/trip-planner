@@ -292,6 +292,16 @@ function getItemDayKey(item) {
   return null
 }
 
+// Falls back gracefully for accounts that didn't come through Google (e.g.
+// email/password demo accounts used for App Store review) where
+// user_metadata.full_name is never populated by Supabase automatically.
+function getDisplayName(user) {
+  return user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'You'
+}
+function getInitial(user) {
+  return getDisplayName(user).charAt(0).toUpperCase()
+}
+
 // ---------- Offline cache ----------
 // Every fetch below writes its result here on success. If a fetch fails
 // (most likely because there's no connection), we fall back to whatever
@@ -540,6 +550,18 @@ function App() {
   const [joinMessage, setJoinMessage] = useState('')
   const [collapsedSuggestionDays, setCollapsedSuggestionDays] = useState({})
 
+  // ---------- Email/password sign-in (additive) ----------
+  // Sits alongside Google OAuth below as a second way in — added primarily so
+  // App Store reviewers (who can't complete a live Google OAuth handshake)
+  // have a reliable demo login. Doesn't touch signInWithGoogle, the native
+  // OAuth callback listener, or providerToken/calendar sync at all.
+  const [authMode, setAuthMode] = useState('google') // 'google' | 'signin' | 'signup'
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authName, setAuthName] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
+
   const [items, setItems] = useState([])
   const [editingItem, setEditingItem] = useState(null)
   const [newTitle, setNewTitle] = useState('')
@@ -660,6 +682,35 @@ function App() {
     if (Capacitor.isNativePlatform() && data?.url) {
       await Browser.open({ url: data.url })
     }
+  }
+
+  // ---------- Email/password sign-in + sign-up (additive) ----------
+  // Uses the same Supabase Auth instance as Google sign-in, so once a session
+  // exists it's indistinguishable to the rest of the app — every query below
+  // (fetchTrips, fetchMembers, etc.) keys off user.id regardless of how that
+  // user signed in.
+  async function signInWithEmail() {
+    setAuthError('')
+    if (!authEmail || !authPassword) { setAuthError('Enter an email and password.'); return }
+    setAuthLoading(true)
+    const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword })
+    setAuthLoading(false)
+    if (error) { setAuthError(error.message); return }
+  }
+
+  async function signUpWithEmail() {
+    setAuthError('')
+    if (!authEmail || !authPassword) { setAuthError('Enter an email and password.'); return }
+    if (authPassword.length < 6) { setAuthError('Password must be at least 6 characters.'); return }
+    setAuthLoading(true)
+    const { error } = await supabase.auth.signUp({
+      email: authEmail,
+      password: authPassword,
+      options: { data: { full_name: authName || authEmail.split('@')[0] } }
+    })
+    setAuthLoading(false)
+    if (error) { setAuthError(error.message); return }
+    setAuthError('Check your email to confirm your account, then sign in.')
   }
 
   useEffect(() => {
@@ -808,7 +859,7 @@ function App() {
       ;(memberRows || []).forEach(m => { if (m.color_hex) colorById[m.user_id] = m.color_hex })
       const list = allIds.map(uid => ({
         user_id: uid,
-        display_name: uid === user.id ? (user.user_metadata?.full_name || 'You') : (nameById[uid] || `Member (${uid.slice(0, 6)})`),
+        display_name: uid === user.id ? getDisplayName(user) : (nameById[uid] || `Member (${uid.slice(0, 6)})`),
         color_hex: colorById[uid] || null
       }))
       // Give the current user a color the first time we see them without
@@ -1192,7 +1243,7 @@ function App() {
   // once the API call has actually succeeded.
   async function syncMyCalendar() {
     if (!providerToken) {
-      showInfo({ title: 'Calendar access needed', message: 'Sign out and back in, and approve calendar access when Google asks.' })
+      showInfo({ title: 'Calendar access needed', message: 'Sign in with Google and approve calendar access to use this feature. Accounts signed in with email/password don\u2019t have Google Calendar access.' })
       return
     }
     setSyncingCalendar(true)
@@ -2054,15 +2105,51 @@ function App() {
 
   if (!user) {
     return (
-      <div style={{ minHeight: '100vh', background: BG_GRADIENT, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT }}>
+      <div style={{ minHeight: '100vh', background: BG_GRADIENT, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT, padding: '24px' }}>
         <div style={{ background: 'white', borderRadius: '28px', padding: '48px', width: '100%', maxWidth: '400px', textAlign: 'center', boxShadow: '0 20px 60px rgba(18,18,18,0.2)' }}>
           <div style={{ fontSize: '48px', marginBottom: '16px' }}>✈️</div>
           <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: '32px', fontWeight: '600', color: INK, margin: '0 0 8px' }}>Trip Planner</h1>
           <p style={{ color: MUTED, fontSize: '15px', margin: '0 0 32px' }}>Plan trips together, stress-free</p>
+
           <button onClick={signInWithGoogle}
-            style={{ width: '100%', padding: '14px', border: 'none', borderRadius: '16px', background: ACCENT, color: BG, fontSize: '16px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>
+            style={{ width: '100%', padding: '14px', border: 'none', borderRadius: '16px', background: ACCENT, color: BG, fontSize: '16px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT, marginBottom: '18px' }}>
             Sign in with Google
           </button>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: '0 0 18px' }}>
+            <div style={{ flex: 1, height: '1px', background: CARD_BORDER }} />
+            <span style={{ fontSize: '12px', color: MUTED, fontWeight: '600' }}>or</span>
+            <div style={{ flex: 1, height: '1px', background: CARD_BORDER }} />
+          </div>
+
+          {authMode === 'google' ? (
+            <button onClick={() => setAuthMode('signin')} style={{
+              width: '100%', padding: '13px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '16px',
+              background: 'white', color: INK, fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT
+            }}>
+              Sign in with email
+            </button>
+          ) : (
+            <div style={{ textAlign: 'left' }}>
+              {authMode === 'signup' && (
+                <input placeholder="Your name" value={authName} onChange={e => setAuthName(e.target.value)}
+                  style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
+              )}
+              <input placeholder="Email" type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)}
+                style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
+              <input placeholder="Password" type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
+                style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
+              {authError && <p style={{ fontSize: '13px', color: '#A32D2D', margin: '0 0 10px' }}>{authError}</p>}
+              <button onClick={authMode === 'signin' ? signInWithEmail : signUpWithEmail} disabled={authLoading}
+                style={{ width: '100%', padding: '13px', border: 'none', borderRadius: '14px', background: ACCENT, color: BG, fontSize: '14px', fontWeight: '700', cursor: authLoading ? 'default' : 'pointer', opacity: authLoading ? 0.6 : 1, fontFamily: FONT, marginBottom: '10px' }}>
+                {authLoading ? 'Please wait…' : authMode === 'signin' ? 'Sign in' : 'Create account'}
+              </button>
+              <button onClick={() => { setAuthMode(authMode === 'signin' ? 'signup' : 'signin'); setAuthError('') }}
+                style={{ width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: '13px', cursor: 'pointer', fontFamily: FONT, padding: '4px' }}>
+                {authMode === 'signin' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     )
@@ -2100,12 +2187,12 @@ function App() {
               {(() => {
                 const meColor = memberColorHex(members.find(m => m.user_id === user.id)?.color_hex)
                 return (
-                  <div title={user.user_metadata?.full_name || 'You'} style={{
+                  <div title={getDisplayName(user)} style={{
                     width: '32px', height: '32px', borderRadius: '50%', background: 'white', color: meColor,
                     fontWeight: '800', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center',
                     border: `2px solid ${meColor}`, flexShrink: 0
                   }}>
-                    {(user.user_metadata?.full_name || 'Y').charAt(0).toUpperCase()}
+                    {getInitial(user)}
                   </div>
                 )
               })()}
@@ -2957,12 +3044,12 @@ function App() {
             <span style={{ fontSize: '22px', lineHeight: '28px' }}>✈️</span>
             <div>
               <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: '24px', fontWeight: '600', color: BG, margin: '0 0 2px' }}>Trip Planner</h1>
-              <p style={{ color: 'rgba(214,210,200,0.9)', fontSize: '14px', margin: 0 }}>Hey, {user.user_metadata.full_name?.split(' ')[0]}!</p>
+              <p style={{ color: 'rgba(214,210,200,0.9)', fontSize: '14px', margin: 0 }}>Hey, {getDisplayName(user).split(' ')[0]}!</p>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(214,210,200,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: BG, fontWeight: '700', fontSize: '15px' }}>
-              {user.user_metadata.full_name?.charAt(0)}
+              {getInitial(user)}
             </div>
             <button onClick={signOut} style={{ padding: '8px 16px', border: '1px solid rgba(214,210,200,0.35)', borderRadius: '999px', background: 'rgba(214,210,200,0.18)', color: BG, fontSize: '13px', cursor: 'pointer', fontWeight: '600', fontFamily: FONT }}>Sign out</button>
           </div>
