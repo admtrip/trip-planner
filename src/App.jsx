@@ -143,7 +143,7 @@ const TYPE_CONFIG = {
   activity:  { label: 'Activity',      Icon: Compass,         color: CAT_ACTIVITY,  timing: 'single', confirmation: false },
   food:      { label: 'Food & Drinks', Icon: UtensilsCrossed, color: CAT_FOOD,      timing: 'single', confirmation: false },
   excursion: { label: 'Excursion',     Icon: Ticket,          color: CAT_EXCURSION, timing: 'single', confirmation: true  },
-  hotel:     { label: 'Hotel',         Icon: Hotel,           color: CAT_HOTEL,     timing: 'stay',   confirmation: true, inLabel: 'Check-in',  outLabel: 'Check-out' },
+  hotel:     { label: 'Lodging',       Icon: Hotel,           color: CAT_HOTEL,     timing: 'stay',   confirmation: true, inLabel: 'Check-in',  outLabel: 'Check-out' },
   car:       { label: 'Car Rental',    Icon: Car,             color: CAT_CAR,       timing: 'stay',   confirmation: true, inLabel: 'Pickup',    outLabel: 'Return'     },
   flight:    { label: 'Flight',        Icon: Plane,           color: CAT_FLIGHT,    timing: 'flight', confirmation: true  },
   note:      { label: 'Note',          Icon: StickyNote,      color: MUTED,         timing: 'single', confirmation: false },
@@ -595,6 +595,7 @@ function App() {
   const [members, setMembers] = useState([])
 
   const [showAddExpense, setShowAddExpense] = useState(false)
+  const [editingExpenseId, setEditingExpenseId] = useState(null)
   const [expTitle, setExpTitle] = useState('')
   const [expCost, setExpCost] = useState('')
   const [expCostCurrency, setExpCostCurrency] = useState('USD')
@@ -607,6 +608,11 @@ function App() {
   const [splits, setSplits] = useState([])
   const [iSplits, setISplits] = useState([])
   const [showCountedItems, setShowCountedItems] = useState(false)
+  const [showMath, setShowMath] = useState(false)
+  const [settlePersonFilter, setSettlePersonFilter] = useState('all')
+  const [itineraryTypeFilter, setItineraryTypeFilter] = useState('all')
+  const [planTypeFilter, setPlanTypeFilter] = useState('all')
+  const [votes, setVotes] = useState([])
   const [packingItems, setPackingItems] = useState([])
   const [newPackingTitle, setNewPackingTitle] = useState('')
   const [newPackingScope, setNewPackingScope] = useState('personal')
@@ -743,6 +749,7 @@ function App() {
       fetchSplits(selectedTrip.id)
       fetchISplits(selectedTrip.id)
       fetchPackingItems(selectedTrip.id)
+      fetchVotes(selectedTrip.id)
     }
   }, [selectedTrip])
 
@@ -938,6 +945,45 @@ function App() {
       console.error('Failed to fetch item splits (using cached copy if available):', err)
       const cached = cacheGet(`isplits:${tripId}`)
       if (cached) setISplits(cached)
+    }
+  }
+
+  // One row per (item_id, user_id) vote — a person can vote once per
+  // suggestion. Fetched the same way as itinerary_splits: get this trip's
+  // item ids first, then pull votes for just those ids.
+  async function fetchVotes(tripId) {
+    try {
+      const { data: iRows } = await supabase.from('itinerary_items').select('id').eq('trip_id', tripId)
+      if (!iRows?.length) { setVotes([]); cacheSet(`votes:${tripId}`, []); return }
+      const { data, error } = await supabase.from('suggestion_votes').select('*').in('item_id', iRows.map(i => i.id))
+      if (error) throw error
+      setVotes(data || [])
+      cacheSet(`votes:${tripId}`, data || [])
+    } catch (err) {
+      console.error('Failed to fetch votes (using cached copy if available):', err)
+      const cached = cacheGet(`votes:${tripId}`)
+      if (cached) setVotes(cached)
+    }
+  }
+
+  function getVoteCount(itemId) {
+    return votes.filter(v => v.item_id === itemId).length
+  }
+  function hasVoted(itemId) {
+    return votes.some(v => v.item_id === itemId && v.user_id === user.id)
+  }
+  async function toggleVote(item) {
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Voting requires a connection.' }); return }
+    const already = hasVoted(item.id)
+    if (already) {
+      const { error } = await supabase.from('suggestion_votes').delete().eq('item_id', item.id).eq('user_id', user.id)
+      if (error) { console.error('Failed to remove vote:', error); return }
+      setVotes(prev => prev.filter(v => !(v.item_id === item.id && v.user_id === user.id)))
+    } else {
+      const { error } = await supabase.from('suggestion_votes').insert({ item_id: item.id, user_id: user.id })
+      if (error) { console.error('Failed to save vote:', error); return }
+      haptic('light')
+      setVotes(prev => [...prev, { item_id: item.id, user_id: user.id }])
     }
   }
 
@@ -1399,9 +1445,11 @@ function App() {
           }
         }
         await supabase.from('itinerary_splits').delete().eq('item_id', itemId)
+        await supabase.from('suggestion_votes').delete().eq('item_id', itemId)
         await supabase.from('itinerary_items').delete().eq('id', itemId)
         fetchItems(selectedTrip.id)
         fetchISplits(selectedTrip.id)
+        fetchVotes(selectedTrip.id)
       }
     })
   }
@@ -1440,9 +1488,25 @@ function App() {
   }
   function resetExpenseForm() {
     setShowAddExpense(false)
+    setEditingExpenseId(null)
     setExpTitle(''); setExpCost(''); setExpCostCurrency('USD'); setExpPaidBy(user.id)
     setExpSplitType('all'); setExpSplitMethod('even')
     setExpSelectedMembers(members.map(m => m.user_id)); setExpCustomAmounts({})
+  }
+  // Opens the Settle tab's own lightweight expense form pre-filled for
+  // editing — used instead of startEditItem() for type==='expense' rows so
+  // editing an expense never bounces you over to the Plan tab.
+  function startEditExpenseInline(item) {
+    setEditingExpenseId(item.id)
+    setExpTitle(item.title || '')
+    setExpCost(item.cost != null ? String(item.cost) : '')
+    setExpCostCurrency(item.cost_currency || 'USD')
+    setExpPaidBy(item.paid_by || user.id)
+    setExpSplitType(item.split_type === 'solo' ? 'solo' : item.split_type === 'equal' ? 'all' : 'some')
+    setExpSplitMethod(item.split_method || 'even')
+    setExpSelectedMembers(item.split_members || members.map(m => m.user_id))
+    setExpCustomAmounts(item.custom_amounts || {})
+    setShowAddExpense(true)
   }
   async function saveExpense() {
     if (!expTitle || !expCost) return
@@ -1450,33 +1514,120 @@ function App() {
     const cost = parseFloat(expCost)
     const splitMembers = getExpSplitMembers()
     const splitMembersToRecord = splitMembers.filter(uid => uid !== expPaidBy)
-    const { data: newItem, error } = await supabase.from('itinerary_items').insert({
-      trip_id: selectedTrip.id, added_by: user.id,
-      title: expTitle, type: 'expense', status: 'booked',
-      is_prepaid: true, cost, cost_currency: expCostCurrency, paid_by: expPaidBy,
+    const expenseData = {
+      title: expTitle, cost, cost_currency: expCostCurrency, paid_by: expPaidBy,
       split_type: expSplitType === 'all' ? 'equal' : expSplitType,
       split_method: expSplitMethod,
       split_members: expSplitType === 'some' ? expSelectedMembers : null,
       custom_amounts: expSplitMethod === 'custom' ? expCustomAmounts : null
-    }).select().single()
-    if (error) { console.error('Failed to add expense:', error); showInfo({ title: 'Could not add expense', message: error.message }); return }
-    haptic('success')
-    if (newItem && splitMembersToRecord.length > 0) {
-      const { error: splitError } = await supabase.from('itinerary_splits').insert(splitMembersToRecord.map(uid => ({
-        item_id: newItem.id, user_id: uid,
-        amount_owed: expSplitMethod === 'even' ? getExpEvenAmount() : parseFloat(expCustomAmounts[uid] || 0),
-        paid: false
-      })))
-      if (splitError) console.error('Failed to save splits:', splitError)
     }
+
+    if (editingExpenseId) {
+      const { error } = await supabase.from('itinerary_items').update(expenseData).eq('id', editingExpenseId)
+      if (error) { console.error('Failed to update expense:', error); showInfo({ title: 'Could not save changes', message: error.message }); return }
+      await supabase.from('itinerary_splits').delete().eq('item_id', editingExpenseId)
+      if (splitMembersToRecord.length > 0) {
+        const { error: splitError } = await supabase.from('itinerary_splits').insert(splitMembersToRecord.map(uid => ({
+          item_id: editingExpenseId, user_id: uid,
+          amount_owed: expSplitMethod === 'even' ? getExpEvenAmount() : parseFloat(expCustomAmounts[uid] || 0),
+          paid: false
+        })))
+        if (splitError) console.error('Failed to save splits:', splitError)
+      }
+      haptic('success')
+    } else {
+      const { data: newItem, error } = await supabase.from('itinerary_items').insert({
+        trip_id: selectedTrip.id, added_by: user.id,
+        title: expTitle, type: 'expense', status: 'booked', is_prepaid: true,
+        ...expenseData
+      }).select().single()
+      if (error) { console.error('Failed to add expense:', error); showInfo({ title: 'Could not add expense', message: error.message }); return }
+      haptic('success')
+      if (newItem && splitMembersToRecord.length > 0) {
+        const { error: splitError } = await supabase.from('itinerary_splits').insert(splitMembersToRecord.map(uid => ({
+          item_id: newItem.id, user_id: uid,
+          amount_owed: expSplitMethod === 'even' ? getExpEvenAmount() : parseFloat(expCustomAmounts[uid] || 0),
+          paid: false
+        })))
+        if (splitError) console.error('Failed to save splits:', splitError)
+      }
+    }
+    // Deliberately no setActiveTab() call here — adding or editing an
+    // expense from Settle always keeps you on Settle. Only editing a
+    // full itinerary item (flight, lodging, etc.) sends you to Plan,
+    // because that's the only place with the fields to edit it.
     resetExpenseForm()
     fetchItems(selectedTrip.id)
     fetchISplits(selectedTrip.id)
   }
 
+  function canvasRoundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.arcTo(x + w, y, x + w, y + h, r)
+    ctx.arcTo(x + w, y + h, x, y + h, r)
+    ctx.arcTo(x, y + h, x, y, r)
+    ctx.arcTo(x, y, x + w, y, r)
+    ctx.closePath()
+  }
+
+  function shareItineraryAsText(booked, grouped, dateKeys) {
+    let text = `${selectedTrip.name} — Itinerary\n`
+    if (selectedTrip.start_date) {
+      text += `${formatDate(selectedTrip.start_date)}${selectedTrip.end_date ? ` \u2013 ${formatDate(selectedTrip.end_date)}` : ''}\n`
+    }
+    text += '\n'
+    const SHARE_CATEGORY_ORDER_TEXT = ['hotel', 'activity', 'food', 'excursion', 'note']
+    dateKeys.forEach(day => {
+      text += `${formatDate(day)}\n`
+      SHARE_CATEGORY_ORDER_TEXT.forEach(type => {
+        const catItems = grouped[day].filter(i => i.type === type)
+        if (catItems.length === 0) return
+        text += `${(TYPE_CONFIG[type]?.label || type).toUpperCase()}\n`
+        catItems.forEach(item => {
+          const sub = itemSubtitle(item, false)
+          text += `\u2022 ${item.title}${sub ? ` \u2014 ${sub}` : ''}\n`
+        })
+      })
+      text += '\n'
+    })
+    text += 'Shared from Trippy'
+
+    const fallbackToClipboard = () => {
+      navigator.clipboard.writeText(text)
+        .then(() => showInfo({ title: 'Copied!', message: 'Your itinerary was copied to the clipboard.' }))
+        .catch(() => showInfo({ title: 'Copy this itinerary manually', message: text }))
+    }
+    if (navigator.share) {
+      navigator.share({ title: `${selectedTrip.name} Itinerary`, text }).catch(err => {
+        if (err?.name !== 'AbortError') fallbackToClipboard()
+      })
+    } else {
+      fallbackToClipboard()
+    }
+  }
+
+  // Renders the booked itinerary, grouped by day, as a shareable PNG image —
+  // much more legible dropped into a text thread or email than a wall of
+  // plain text. Falls back to the old text-based share (defined above) if
+  // canvas rendering or image sharing isn't available.
+  // Categories worth showing in the shared image, in display order. Flights,
+  // car rentals, and expenses are deliberately left off — this export is
+  // meant as a "what are we doing" glance, not a full booking record.
+  const SHARE_CATEGORY_ORDER = ['hotel', 'activity', 'food', 'excursion', 'note']
+
+  // Splits one day's items into ordered, colored category groups so the
+  // exported image reads as clearly labeled sections instead of one flat list.
+  function buildDayCategories(dayItems) {
+    return SHARE_CATEGORY_ORDER
+      .map(type => ({ type, cfg: TYPE_CONFIG[type], items: dayItems.filter(i => i.type === type) }))
+      .filter(group => group.items.length > 0)
+  }
+
   function shareItinerary() {
     if (!selectedTrip) return
-    const booked = items.filter(i => i.status === 'booked' && (i.day_date || i.check_in))
+    const EXCLUDED_SHARE_TYPES = ['flight', 'car', 'expense']
+    const booked = items.filter(i => i.status === 'booked' && (i.day_date || i.check_in) && !EXCLUDED_SHARE_TYPES.includes(i.type))
     if (booked.length === 0) {
       showInfo({ title: 'Nothing to share yet', message: 'Book a few things first, then share your itinerary.' })
       return
@@ -1488,33 +1639,132 @@ function App() {
       ;(grouped[key] = grouped[key] || []).push(item)
     })
     const dateKeys = Object.keys(grouped).sort()
-    let text = `${selectedTrip.name} — Itinerary\n`
-    if (selectedTrip.start_date) {
-      text += `${formatDate(selectedTrip.start_date)}${selectedTrip.end_date ? ` \u2013 ${formatDate(selectedTrip.end_date)}` : ''}\n`
-    }
-    text += '\n'
-    dateKeys.forEach(day => {
-      text += `${formatDate(day)}\n`
-      grouped[day].forEach(item => {
-        const sub = itemSubtitle(item, false)
-        text += `\u2022 ${item.title}${sub ? ` \u2014 ${sub}` : ''}\n`
-      })
-      text += '\n'
-    })
-    text += 'Shared from Trippy'
+    const dayCategories = {}
+    dateKeys.forEach(day => { dayCategories[day] = buildDayCategories(grouped[day]) })
 
-    const fallbackToClipboard = () => {
-      navigator.clipboard.writeText(text)
-        .then(() => showInfo({ title: 'Copied!', message: 'Your itinerary was copied to the clipboard.' }))
-        .catch(() => showInfo({ title: 'Copy this itinerary manually', message: text }))
-    }
-
-    if (navigator.share) {
-      navigator.share({ title: `${selectedTrip.name} Itinerary`, text }).catch(err => {
-        if (err?.name !== 'AbortError') fallbackToClipboard()
+    try {
+      const COLS = 2
+      const CARD_W = 320, CARD_PAD = 16, CARD_GAP = 16, HEADER_H = 90, LINE_H = 20, CAT_HEADER_H = 20
+      const rows = Math.ceil(dateKeys.length / COLS)
+      const canvasW = CARD_GAP + COLS * (CARD_W + CARD_GAP)
+      const cardHeights = dateKeys.map(day => {
+        const cats = dayCategories[day]
+        const bodyH = cats.reduce((h, cat) => h + CAT_HEADER_H + cat.items.length * LINE_H, 0)
+        return 34 + bodyH + 12
       })
-    } else {
-      fallbackToClipboard()
+      const rowHeights = []
+      for (let r = 0; r < rows; r++) {
+        const slice = cardHeights.slice(r * COLS, r * COLS + COLS)
+        rowHeights.push(Math.max(...slice))
+      }
+      const canvasH = HEADER_H + rowHeights.reduce((a, b) => a + b + CARD_GAP, 0) + CARD_GAP + 30
+
+      const canvas = document.createElement('canvas')
+      const scale = 2
+      canvas.width = canvasW * scale
+      canvas.height = canvasH * scale
+      const ctx = canvas.getContext('2d')
+      ctx.scale(scale, scale)
+
+      ctx.fillStyle = BG
+      ctx.fillRect(0, 0, canvasW, canvasH)
+
+      ctx.fillStyle = ACCENT_DARK
+      ctx.font = '600 22px Georgia, serif'
+      ctx.textBaseline = 'alphabetic'
+      ctx.fillText(selectedTrip.name, CARD_GAP, 36)
+      ctx.fillStyle = MUTED
+      ctx.font = '13px sans-serif'
+      const dateRange = selectedTrip.start_date
+        ? `${formatDate(selectedTrip.start_date)}${selectedTrip.end_date ? ' - ' + formatDate(selectedTrip.end_date) : ''}`
+        : ''
+      ctx.fillText(dateRange, CARD_GAP, 58)
+
+      let y = HEADER_H
+      dateKeys.forEach((day, idx) => {
+        const col = idx % COLS
+        const row = Math.floor(idx / COLS)
+        const x = CARD_GAP + col * (CARD_W + CARD_GAP)
+        if (col === 0 && row > 0) y += rowHeights[row - 1] + CARD_GAP
+        const cardH = cardHeights[idx]
+
+        ctx.fillStyle = 'white'
+        canvasRoundRect(ctx, x, y, CARD_W, cardH, 14)
+        ctx.fill()
+
+        ctx.strokeStyle = CARD_BORDER
+        ctx.beginPath()
+        ctx.moveTo(x + CARD_PAD, y + 30)
+        ctx.lineTo(x + CARD_W - CARD_PAD, y + 30)
+        ctx.stroke()
+
+        ctx.fillStyle = ACCENT_DARK
+        ctx.font = '700 13px sans-serif'
+        ctx.fillText(formatDate(day), x + CARD_PAD, y + 22)
+
+        let catY = y + 30
+        dayCategories[day].forEach(cat => {
+          const color = cat.cfg?.color || TEAL
+          catY += CAT_HEADER_H
+          ctx.fillStyle = color
+          ctx.font = '700 10px sans-serif'
+          ctx.fillText((cat.cfg?.label || cat.type).toUpperCase(), x + CARD_PAD, catY - 6)
+
+          cat.items.forEach((item, i) => {
+            const ty = catY + i * LINE_H
+            ctx.fillStyle = color
+            ctx.beginPath()
+            ctx.arc(x + CARD_PAD + 3, ty - 4, 3, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.fillStyle = INK
+            ctx.font = '12px sans-serif'
+            const sub = itemSubtitle(item, false)
+            const label = sub ? `${item.title} — ${sub}` : item.title
+            ctx.fillText(label.length > 38 ? label.slice(0, 38) + '…' : label, x + CARD_PAD + 12, ty)
+          })
+          catY += cat.items.length * LINE_H
+        })
+      })
+
+      ctx.fillStyle = MUTED
+      ctx.font = '11px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.fillText('Shared from Trippy', canvasW / 2, canvasH - 12)
+      ctx.textAlign = 'left'
+
+      canvas.toBlob(async (blob) => {
+        if (!blob) { shareItineraryAsText(booked, grouped, dateKeys); return }
+        const safeName = selectedTrip.name.replace(/[^a-z0-9]+/gi, '-')
+        const file = new File([blob], `${safeName}-itinerary.png`, { type: 'image/png' })
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({ files: [file], title: `${selectedTrip.name} Itinerary` })
+            return
+          } catch (err) {
+            if (err?.name === 'AbortError') return
+            console.error('Image share failed, falling back to text:', err)
+          }
+        }
+        // No file-sharing support (older browsers) — offer a direct download
+        // of the image instead of silently dropping back to plain text.
+        try {
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `${safeName}-itinerary.png`
+          document.body.appendChild(a)
+          a.click()
+          a.remove()
+          setTimeout(() => URL.revokeObjectURL(url), 3000)
+          showInfo({ title: 'Image saved', message: 'Your itinerary image downloaded — attach it to a text or email manually.' })
+        } catch (err) {
+          console.error('Image download fallback failed:', err)
+          shareItineraryAsText(booked, grouped, dateKeys)
+        }
+      }, 'image/png')
+    } catch (err) {
+      console.error('Failed to render itinerary image, falling back to text:', err)
+      shareItineraryAsText(booked, grouped, dateKeys)
     }
   }
 
@@ -1635,11 +1885,13 @@ function App() {
 
   // Every individual expense/booking that makes up totalTripSpend, tagged
   // with who paid it — mirrors the same filter logic as totalTripSpend so
-  // the itemized list always adds up to that number.
-  function tripSpendBreakdown() {
+  // the itemized list always adds up to that number. Optionally scoped to a
+  // single person (as payer) for the Settle tab's per-person filter.
+  function tripSpendBreakdown(personFilter = 'all') {
     const rows = []
     items.forEach(i => {
       if (i.is_prepaid && i.cost && i.paid_by) {
+        if (personFilter !== 'all' && i.paid_by !== personFilter) return
         const amountUsd = toUSD(i.cost, i.cost_currency)
         if (amountUsd == null) return // fx rate still loading — this item lands once it arrives
         rows.push({ id: i.id, title: i.title, amount: amountUsd, paidBy: i.paid_by })
@@ -1647,6 +1899,7 @@ function App() {
     })
     bookings.forEach(b => {
       const payer = b.paid_by || b.booked_by
+      if (personFilter !== 'all' && payer !== personFilter) return
       if (b.total_cost && payer) {
         rows.push({ id: b.id, title: b.title, amount: b.total_cost, paidBy: payer })
       }
@@ -1686,9 +1939,10 @@ function App() {
     fetchISplits(selectedTrip.id)
   }
 
-  function buildMasterTimeline(view) {
+  function buildMasterTimeline(view, typeFilter = 'all') {
     const dated = [], undated = []
     items.forEach(item => {
+      if (typeFilter !== 'all' && item.type !== typeFilter) return
       if (view === 'personal') {
         const isForMe = item.added_by === user.id || item.paid_by === user.id ||
           (item.split_members && item.split_members.includes(user.id)) ||
@@ -1719,16 +1973,18 @@ function App() {
       if (dayKey) dated.push({ ...item, _source: 'itinerary', date_key: dayKey })
       else undated.push({ ...item, _source: 'itinerary' })
     })
-    bookings.forEach(booking => {
-      if (booking.is_private && booking.booked_by !== user.id) return
-      if (view === 'personal') {
-        const isForMe = booking.booked_by === user.id || booking.paid_by === user.id || booking.traveler_user_id === user.id
-        if (!isForMe) return
-      }
-      const dateKey = booking.check_in ? dateKeyFromDateTime(booking.check_in) : selectedTrip?.start_date || null
-      if (!dateKey) { undated.push({ ...booking, _source: 'booking' }); return }
-      dated.push({ ...booking, _source: 'booking', date_key: dateKey })
-    })
+    if (typeFilter === 'all') {
+      bookings.forEach(booking => {
+        if (booking.is_private && booking.booked_by !== user.id) return
+        if (view === 'personal') {
+          const isForMe = booking.booked_by === user.id || booking.paid_by === user.id || booking.traveler_user_id === user.id
+          if (!isForMe) return
+        }
+        const dateKey = booking.check_in ? dateKeyFromDateTime(booking.check_in) : selectedTrip?.start_date || null
+        if (!dateKey) { undated.push({ ...booking, _source: 'booking' }); return }
+        dated.push({ ...booking, _source: 'booking', date_key: dateKey })
+      })
+    }
     dated.sort((a, b) => {
       if (a.date_key < b.date_key) return -1
       if (a.date_key > b.date_key) return 1
@@ -1990,6 +2246,19 @@ function App() {
                 {usdEquivalent(item.cost, item.cost_currency) && <span>&nbsp;(~${usdEquivalent(item.cost, item.cost_currency)} USD)</span>}
               </p>
             )}
+            {isSuggested && !isBooking && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
+                <button onClick={() => toggleVote(item)} title={hasVoted(item.id) ? 'Remove your vote' : 'Vote for this idea'} style={{
+                  display: 'flex', alignItems: 'center', gap: '3px', border: 'none', cursor: 'pointer',
+                  borderRadius: '10px', padding: '4px 8px',
+                  background: hasVoted(item.id) ? ACCENT : 'rgba(255,255,255,0.6)',
+                  color: hasVoted(item.id) ? BG : cardMutedColor
+                }}>
+                  <ChevronUp size={13} />
+                  <span style={{ fontSize: '12px', fontWeight: '700' }}>{getVoteCount(item.id)}</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2164,13 +2433,13 @@ function App() {
       bookings.filter(b => b.total_cost).reduce((s, b) => s + b.total_cost, 0)
     const myTransfers = transfers.filter(t => t.from === user.id || t.to === user.id)
     const otherTransfers = transfers.filter(t => t.from !== user.id && t.to !== user.id)
-    const breakdown = tripSpendBreakdown()
-    const masterTimeline = buildMasterTimeline(masterView)
+    const breakdown = tripSpendBreakdown(settlePersonFilter)
+    const masterTimeline = buildMasterTimeline(masterView, itineraryTypeFilter)
     const masterGrouped = {}
     masterTimeline.dated.forEach(i => { (masterGrouped[i.date_key] = masterGrouped[i.date_key] || []).push(i) })
     const masterDates = Object.keys(masterGrouped).sort()
-    const datedItems = items.filter(i => getItemDayKey(i))
-    const undatedItems = items.filter(i => !getItemDayKey(i))
+    const datedItems = items.filter(i => getItemDayKey(i) && (planTypeFilter === 'all' || i.type === planTypeFilter))
+    const undatedItems = items.filter(i => !getItemDayKey(i) && (planTypeFilter === 'all' || i.type === planTypeFilter))
     const itineraryGrouped = {}
     datedItems.forEach(i => { const k = getItemDayKey(i); (itineraryGrouped[k] = itineraryGrouped[k] || []).push(i) })
     const itineraryDates = Object.keys(itineraryGrouped).sort()
@@ -2264,7 +2533,7 @@ function App() {
 
           {activeTab === 'master' && (
             <>
-              <div style={{ display: 'flex', borderBottom: `1px solid ${CARD_BORDER}`, marginBottom: '24px' }}>
+              <div style={{ display: 'flex', borderBottom: `1px solid ${CARD_BORDER}`, marginBottom: '18px' }}>
                 {['group', 'personal', 'bookings', 'suggestions'].map(view => {
                   const isActive = masterView === view
                   return (
@@ -2280,6 +2549,17 @@ function App() {
                   )
                 })}
               </div>
+              {masterView !== 'suggestions' && (
+                <div style={{ marginBottom: '18px' }}>
+                  <label style={{ fontSize: '11px', color: MUTED, fontWeight: '600', display: 'block', marginBottom: '5px' }}>Filter by type</label>
+                  <select value={itineraryTypeFilter} onChange={e => setItineraryTypeFilter(e.target.value)} style={inputStyle}>
+                    <option value="all">All types</option>
+                    {Object.entries(TYPE_CONFIG).filter(([k]) => k !== 'expense').map(([k, cfg]) => (
+                      <option key={k} value={k}>{cfg.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {masterView === 'suggestions' ? (
                 (() => {
                   const CLUSTER_KM = 1.5   // suggestions closer than this get grouped together
@@ -2319,6 +2599,8 @@ function App() {
 
                   // Greedy proximity clustering: each unclustered suggestion seeds a
                   // new group, pulling in every other unclustered one within range.
+                  // Clusters are then sorted by total votes so the most-wanted
+                  // group of ideas floats to the top of the list.
                   const clusters = []
                   const used = new Set()
                   withGeo.forEach((item, i) => {
@@ -2332,7 +2614,13 @@ function App() {
                         used.add(j)
                       }
                     })
+                    cluster.sort((a, b) => getVoteCount(b.id) - getVoteCount(a.id))
                     clusters.push(cluster)
+                  })
+                  clusters.sort((a, b) => {
+                    const aVotes = a.reduce((s, i) => s + getVoteCount(i.id), 0)
+                    const bVotes = b.reduce((s, i) => s + getVoteCount(i.id), 0)
+                    return bVotes - aVotes
                   })
 
                   return (
@@ -2358,7 +2646,7 @@ function App() {
                           <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>
                             📍 No location set
                           </h3>
-                          {withoutGeo.map((item, idx) => renderCard(item, `sugg-noloc-${idx}`, true))}
+                          {[...withoutGeo].sort((a, b) => getVoteCount(b.id) - getVoteCount(a.id)).map((item, idx) => renderCard(item, `sugg-noloc-${idx}`, true))}
                         </div>
                       )}
                     </>
@@ -2373,12 +2661,6 @@ function App() {
                 </div>
               ) : (
                 <>
-                  {masterTimeline.undated.length > 0 && (
-                    <div style={{ marginBottom: '28px' }}>
-                      <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>💵 New Expenses</h3>
-                      {masterTimeline.undated.map((item, idx) => renderCard(item, `undated-${idx}`, true))}
-                    </div>
-                  )}
                   {(() => {
                     const todayKey = new Date().toISOString().split('T')[0]
                     const effectiveDay = (selectedDay && (selectedDay === 'ALL' || masterDates.includes(selectedDay))) ? selectedDay
@@ -2633,6 +2915,16 @@ function App() {
                 </div>
               </div>
 
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ fontSize: '11px', color: MUTED, fontWeight: '600', display: 'block', marginBottom: '5px' }}>Filter list by type</label>
+                <select value={planTypeFilter} onChange={e => setPlanTypeFilter(e.target.value)} style={inputStyle}>
+                  <option value="all">All types</option>
+                  {Object.entries(TYPE_CONFIG).map(([k, cfg]) => (
+                    <option key={k} value={k}>{cfg.label}</option>
+                  ))}
+                </select>
+              </div>
+
               {undatedItems.length > 0 && (
                 <div style={{ marginBottom: '24px' }}>
                   <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>💵 New Expenses</h3>
@@ -2692,7 +2984,7 @@ function App() {
           {activeTab === 'settleup' && (
             <>
               <div style={{ background: getBannerStyle(selectedTrip.banner_style), borderRadius: '20px', padding: '18px 20px', marginBottom: '14px', textAlign: 'center', position: 'relative' }}>
-                <button onClick={() => setShowAddExpense(v => !v)} title="Add an expense" style={{
+                <button onClick={() => { if (showAddExpense) resetExpenseForm(); else setShowAddExpense(true) }} title="Add an expense" style={{
                   position: 'absolute', top: '14px', right: '14px',
                   width: '30px', height: '30px', borderRadius: '50%', border: 'none',
                   background: 'rgba(214,210,200,0.25)', color: BG, fontSize: '18px', fontWeight: '700', cursor: 'pointer', lineHeight: 1
@@ -2731,9 +3023,12 @@ function App() {
                     </div>
                   </div>
                   {splitSection(expSplitType, setExpSplitType, expSplitMethod, setExpSplitMethod, expSelectedMembers, setExpSelectedMembers, expCustomAmounts, setExpCustomAmounts, expCost, getExpEvenAmount(), getExpSplitMembers)}
-                  <button onClick={saveExpense} style={{ width: '100%', padding: '13px', border: 'none', borderRadius: '14px', background: ACCENT, color: BG, fontSize: '15px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT, marginTop: '4px' }}>
-                    Add expense
-                  </button>
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+                    {editingExpenseId && <button onClick={resetExpenseForm} style={{ flex: 1, padding: '13px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', background: 'white', color: MUTED, fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>Cancel</button>}
+                    <button onClick={saveExpense} style={{ flex: 2, padding: '13px', border: 'none', borderRadius: '14px', background: ACCENT, color: BG, fontSize: '15px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>
+                      {editingExpenseId ? 'Save changes' : 'Add expense'}
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -2774,9 +3069,19 @@ function App() {
                 </div>
               )}
 
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '11px', color: MUTED, fontWeight: '600', display: 'block', marginBottom: '8px' }}>Filter by person</label>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {memberChip(settlePersonFilter === 'all', () => setSettlePersonFilter('all'), 'Everyone')}
+                  {members.map(m => memberChip(settlePersonFilter === m.user_id, () => setSettlePersonFilter(m.user_id), m.user_id === user.id ? 'Me' : m.display_name))}
+                </div>
+              </div>
+
               <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
                 <button onClick={() => setShowCountedItems(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                  <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>What's counted ({breakdown.length})</h2>
+                  <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>
+                    {settlePersonFilter === 'all' ? `What's counted (${breakdown.length})` : `Paid by ${getMemberName(settlePersonFilter)} (${breakdown.length})`}
+                  </h2>
                   <span style={{ color: MUTED, fontSize: '13px' }}>{showCountedItems ? '▲ Hide' : '▼ Show'}</span>
                 </button>
                 {showCountedItems && (
@@ -2789,7 +3094,11 @@ function App() {
                         const mColor = memberColorHex(payer?.color_hex)
                         const linkedItem = items.find(it => it.id === row.id)
                         return (
-                          <div key={row.id ?? i} onClick={() => { if (linkedItem) startEditItem(linkedItem); else setActiveTab('plan') }} style={{
+                          <div key={row.id ?? i} onClick={() => {
+                            if (!linkedItem) { setShowAddExpense(true); return }
+                            if (linkedItem.type === 'expense') startEditExpenseInline(linkedItem)
+                            else startEditItem(linkedItem)
+                          }} style={{
                             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', cursor: 'pointer',
                             padding: '10px 12px', marginBottom: i < breakdown.length - 1 ? '8px' : 0,
                             borderRadius: '12px', background: `${mColor}1A`, borderLeft: `3px solid ${mColor}`
@@ -2817,7 +3126,11 @@ function App() {
                     {unitemized.map((row, i) => {
                       const item = items.find(it => it.id === row.id)
                       return (
-                        <div key={row.id} onClick={() => item && startEditItem(item)} style={{
+                        <div key={row.id} onClick={() => {
+                          if (!item) return
+                          if (item.type === 'expense') startEditExpenseInline(item)
+                          else startEditItem(item)
+                        }} style={{
                           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', cursor: 'pointer',
                           padding: '10px 12px', marginBottom: i < unitemized.length - 1 ? '8px' : 0,
                           borderRadius: '12px', background: 'rgba(154,78,58,0.15)', borderLeft: `3px solid ${GOLD}`
@@ -2835,6 +3148,29 @@ function App() {
                   </div>
                 )
               })()}
+
+              <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
+                <button onClick={() => setShowMath(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                  <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>Show the math</h2>
+                  {showMath ? <ChevronUp size={16} color={MUTED} /> : <ChevronDown size={16} color={MUTED} />}
+                </button>
+                {showMath && (
+                  <div style={{ marginTop: '14px' }}>
+                    {members.map((m, i) => {
+                      const paid = totalsPaid[m.user_id] || 0
+                      const net = balances[m.user_id] || 0
+                      return (
+                        <div key={m.user_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: i < members.length - 1 ? `0.5px solid ${CARD_BORDER}` : 'none' }}>
+                          <span style={{ fontSize: '13px', color: INK, fontWeight: '600' }}>{m.user_id === user.id ? 'Me' : m.display_name}</span>
+                          <span style={{ fontSize: '12px', color: MUTED }}>
+                            Paid ${paid.toFixed(2)} &middot; {net >= 0 ? 'Owed' : 'Owes'} ${Math.abs(net).toFixed(2)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
 
               {undatedItems.length > 0 && (
                 <div style={{ marginBottom: '20px' }}>
@@ -2928,13 +3264,14 @@ function App() {
                   <h2 style={{ fontSize: '16px', fontWeight: '800', color: INK, margin: 0 }}>How this app works</h2>
                 </div>
                 {[
-                  { title: 'Itinerary', body: "The day-by-day read-only view of the trip. Booked plans show solid; suggested ideas show dashed and can be folded away." },
-                  { title: 'Plan', body: 'Where you add and edit anything — flights, stays, activities, expenses. Tap an item here to change it.' },
+                  { title: 'Itinerary', body: "The day-by-day read-only view of the trip. Booked plans show solid; suggested ideas show dashed and can be folded away. Use the type filter to focus on just lodging, flights, and so on." },
+                  { title: 'Plan', body: 'Where you add and edit anything — flights, stays, activities, expenses. Tap an item here to change it. Filter the list by type to find something quickly.' },
                   { title: 'Booked vs Suggested', body: 'Set an item\u2019s status when adding it, or hold down on an Itinerary card for about a second to flip it between the two.' },
+                  { title: 'Voting on ideas', body: 'On the Ideas tab, tap the arrow on any suggestion to vote for it. Everyone on the trip can vote once per idea, and the most-voted ideas float to the top.' },
                   { title: 'Map', body: 'Every addressed item plotted together, plus one link that opens the whole trip as a route in Google Maps.' },
-                  { title: 'Settle', body: 'Who owes whom, broken down by expense. Tap any item in \u201cWhat\u2019s counted\u201d or \u201cNeeds a payer\u201d to jump straight to editing it.' },
+                  { title: 'Settle', body: 'Who owes whom, broken down by expense. Filter by person to see just their itemized spend, and tap \u201cShow the math\u201d for the full per-person totals. Tap any item in the lists to jump straight to editing it.' },
                   { title: 'Packing', body: 'Add items as "For the group" or "Just for me." Group items are shared with everyone, but each person checks their own copy off — your progress doesn\u2019t affect anyone else\u2019s.' },
-                  { title: 'Share itinerary', body: 'The share icon on Itinerary (or the button below) sends a clean day-by-day summary of your booked plans by text, email, or anywhere else.' },
+                  { title: 'Share itinerary', body: 'The share icon on Itinerary (or the button below) generates an image of your booked plans, grouped by day, ready to drop into a text or email.' },
                   { title: 'Trip color', body: 'Pick a color or gradient below to change this trip\u2019s banner. Everyone on the trip sees the same one.' },
                 ].map((row, i, arr) => (
                   <div key={row.title} style={{ padding: '10px 0', borderBottom: i < arr.length - 1 ? `0.5px solid ${CARD_BORDER}` : 'none' }}>
