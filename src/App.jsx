@@ -3067,7 +3067,7 @@ function App() {
                 </div>
               )}
 
-              <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
+              <div style={{ background: 'white', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '18px', padding: '16px', marginBottom: '12px' }}>
                 <h2 style={{ fontSize: '16px', fontWeight: '800', color: INK, margin: '0 0 14px' }}>Your balance</h2>
                 {myTransfers.length === 0 ? (
                   <p style={{ fontSize: '13px', color: MUTED, margin: 0 }}>You're all settled up with everyone. 🎉</p>
@@ -3093,7 +3093,7 @@ function App() {
               </div>
 
               {otherTransfers.length > 0 && (
-                <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
+                <div style={{ background: 'white', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '18px', padding: '16px', marginBottom: '12px' }}>
                   <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: '0 0 14px' }}>Rest of the group</h2>
                   {otherTransfers.map((t, i) => (
                     <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: i < otherTransfers.length - 1 ? `0.5px solid ${CARD_BORDER}` : 'none' }}>
@@ -3112,7 +3112,7 @@ function App() {
                 </div>
               </div>
 
-              <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
+              <div style={{ background: 'rgba(214,210,200,0.5)', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '18px', padding: '16px', marginBottom: '12px' }}>
                 <button onClick={() => setShowMath(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                   <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>Show the math</h2>
                   {showMath ? <ChevronUp size={16} color={MUTED} /> : <ChevronDown size={16} color={MUTED} />}
@@ -3135,7 +3135,7 @@ function App() {
                 )}
               </div>
 
-              <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
+              <div style={{ background: 'white', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '18px', padding: '16px', marginBottom: '12px' }}>
                 <button onClick={() => setShowCountedItems(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                   <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>
                     {settlePersonFilter === 'all' ? `What's counted (${breakdown.length})` : `Paid by ${getMemberName(settlePersonFilter)} (${breakdown.length})`}
@@ -3178,9 +3178,9 @@ function App() {
                 const unitemized = unitemizedTripSpend()
                 if (unitemized.length === 0) return null
                 return (
-                  <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
-                    <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: '0 0 4px' }}>Needs a payer ({unitemized.length})</h2>
-                    <p style={{ fontSize: '12px', color: MUTED, margin: '0 0 14px' }}>Counted in the total above, but no one's marked as having paid — tap one to fix it.</p>
+                  <div style={{ background: 'rgba(154,78,58,0.08)', border: `1.5px solid ${GOLD}`, borderRadius: '18px', padding: '16px', marginBottom: '12px' }}>
+                    <h2 style={{ fontSize: '15px', fontWeight: '800', color: GOLD, margin: '0 0 4px' }}>Needs a payer ({unitemized.length})</h2>
+                    <p style={{ fontSize: '12px', color: GOLD, margin: '0 0 14px' }}>Counted in the total above, but no one's marked as having paid — tap one to fix it.</p>
                     {unitemized.map((row, i) => {
                       const item = items.find(it => it.id === row.id)
                       return (
