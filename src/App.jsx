@@ -8,7 +8,7 @@ import {
   Map, ClipboardList, Globe, Wallet, Compass, UtensilsCrossed, Ticket, Hotel,
   Car, Plane, StickyNote, Pencil, X, MapPin, Link2, ArrowLeft, CalendarDays,
   ChevronUp, ChevronDown, ChevronRight, Wifi, WifiOff, Users, User, Lightbulb, CheckCircle2, Package, Plus,
-  Smile, HandCoins, PartyPopper, PlaneTakeoff, Settings, LogOut, HelpCircle, Share2, Luggage, Trash2
+  Smile, HandCoins, PartyPopper, PlaneTakeoff, Settings, LogOut, HelpCircle, Share2, Luggage, Trash2, Star
 } from 'lucide-react'
 
 // ---------- Palette: strictly the 12 named colors — Limestone, Mulberry, Copper Clay, ----------
@@ -1422,6 +1422,24 @@ function App() {
     })
   }
 
+  // Marks something you actually enjoyed, after the fact — no confirmation
+  // dialog since it's low-stakes and meant to be tapped freely while
+  // reminiscing. Carries through to the exported image so friends can see
+  // what stood out.
+  async function toggleStar(item) {
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'This requires a connection.' }); return }
+    const newValue = !item.is_starred
+    setItems(prev => prev.map(i => i.id === item.id ? { ...i, is_starred: newValue } : i))
+    const { error } = await supabase.from('itinerary_items').update({ is_starred: newValue }).eq('id', item.id)
+    if (error) {
+      console.error('Failed to update star:', error)
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, is_starred: !newValue } : i))
+      showInfo({ title: 'Could not save star', message: error.message })
+      return
+    }
+    haptic('light')
+  }
+
   async function deleteItem(itemId) {
     if (!isOnline) { showInfo({ title: "You're offline", message: 'Deleting requires a connection.' }); return }
     const item = items.find(i => i.id === itemId)
@@ -1571,22 +1589,32 @@ function App() {
     ctx.closePath()
   }
 
-  function shareItineraryAsText(booked, grouped, dateKeys) {
+  // Categories worth showing in the shared image, in display order. Flights,
+  // car rentals, and expenses are deliberately left off — this export is
+  // meant as a "what did we do" glance for friends, not a full booking record.
+  // Times are left off too, for the same reason.
+  const SHARE_CATEGORY_ORDER = ['hotel', 'activity', 'food', 'excursion', 'note']
+
+  // Splits one day's items into ordered, colored category groups so the
+  // exported image reads as clearly labeled sections instead of one flat list.
+  function buildDayCategories(dayItems) {
+    return SHARE_CATEGORY_ORDER
+      .map(type => ({ type, cfg: TYPE_CONFIG[type], items: dayItems.filter(i => i.type === type) }))
+      .filter(group => group.items.length > 0)
+  }
+
+  function shareItineraryAsText(dateKeys, dayCategories) {
     let text = `${selectedTrip.name} — Itinerary\n`
     if (selectedTrip.start_date) {
       text += `${formatDate(selectedTrip.start_date)}${selectedTrip.end_date ? ` \u2013 ${formatDate(selectedTrip.end_date)}` : ''}\n`
     }
     text += '\n'
-    const SHARE_CATEGORY_ORDER_TEXT = ['hotel', 'activity', 'food', 'excursion', 'note']
     dateKeys.forEach(day => {
       text += `${formatDate(day)}\n`
-      SHARE_CATEGORY_ORDER_TEXT.forEach(type => {
-        const catItems = grouped[day].filter(i => i.type === type)
-        if (catItems.length === 0) return
-        text += `${(TYPE_CONFIG[type]?.label || type).toUpperCase()}\n`
-        catItems.forEach(item => {
-          const sub = itemSubtitle(item, false)
-          text += `\u2022 ${item.title}${sub ? ` \u2014 ${sub}` : ''}\n`
+      dayCategories[day].forEach(cat => {
+        text += `${(cat.cfg?.label || cat.type).toUpperCase()}\n`
+        cat.items.forEach(item => {
+          text += `${item.is_starred ? '\u2605' : '\u2022'} ${item.title}\n`
         })
       })
       text += '\n'
@@ -1607,23 +1635,43 @@ function App() {
     }
   }
 
-  // Renders the booked itinerary, grouped by day, as a shareable PNG image —
-  // much more legible dropped into a text thread or email than a wall of
-  // plain text. Falls back to the old text-based share (defined above) if
-  // canvas rendering or image sharing isn't available.
-  // Categories worth showing in the shared image, in display order. Flights,
-  // car rentals, and expenses are deliberately left off — this export is
-  // meant as a "what are we doing" glance, not a full booking record.
-  const SHARE_CATEGORY_ORDER = ['hotel', 'activity', 'food', 'excursion', 'note']
-
-  // Splits one day's items into ordered, colored category groups so the
-  // exported image reads as clearly labeled sections instead of one flat list.
-  function buildDayCategories(dayItems) {
-    return SHARE_CATEGORY_ORDER
-      .map(type => ({ type, cfg: TYPE_CONFIG[type], items: dayItems.filter(i => i.type === type) }))
-      .filter(group => group.items.length > 0)
+  // Draws one day's category sections onto the canvas, starting at startY,
+  // and returns the total vertical space used. Passing draw=false runs the
+  // exact same walk purely to measure height, so measurement and drawing can
+  // never drift out of sync with each other (the bug that caused overlap).
+  function layoutDayBody(ctx, cats, cardX, startY, draw) {
+    const PAD = 16
+    let cursorY = startY
+    cats.forEach(cat => {
+      const color = cat.cfg?.color || TEAL
+      cursorY += 18 // room above each category header
+      if (draw) {
+        ctx.fillStyle = color
+        ctx.font = '700 10px sans-serif'
+        ctx.fillText((cat.cfg?.label || cat.type).toUpperCase(), cardX + PAD, cursorY)
+      }
+      cat.items.forEach(item => {
+        cursorY += 19 // line height, baseline to baseline
+        if (draw) {
+          ctx.fillStyle = color
+          ctx.beginPath()
+          ctx.arc(cardX + PAD + 3, cursorY - 4, 3, 0, Math.PI * 2)
+          ctx.fill()
+          const prefix = item.is_starred ? '\u2605 ' : ''
+          const label = `${prefix}${item.title}`
+          ctx.fillStyle = item.is_starred ? '#9A4E3A' : INK
+          ctx.font = item.is_starred ? '700 12px sans-serif' : '12px sans-serif'
+          ctx.fillText(label.length > 40 ? label.slice(0, 40) + '…' : label, cardX + PAD + 12, cursorY)
+        }
+      })
+    })
+    return cursorY - startY
   }
 
+  // Renders the booked itinerary, grouped by day and color-coded by category,
+  // as a shareable PNG image — much more legible dropped into a text thread
+  // or email than a wall of plain text. Falls back to the plain-text share
+  // above if canvas rendering or image sharing isn't available.
   function shareItinerary() {
     if (!selectedTrip) return
     const EXCLUDED_SHARE_TYPES = ['flight', 'car', 'expense']
@@ -1644,14 +1692,15 @@ function App() {
 
     try {
       const COLS = 2
-      const CARD_W = 320, CARD_PAD = 16, CARD_GAP = 16, HEADER_H = 90, LINE_H = 20, CAT_HEADER_H = 20
+      const CARD_W = 320, CARD_GAP = 16, HEADER_H = 90, TITLE_AREA_H = 34
       const rows = Math.ceil(dateKeys.length / COLS)
       const canvasW = CARD_GAP + COLS * (CARD_W + CARD_GAP)
-      const cardHeights = dateKeys.map(day => {
-        const cats = dayCategories[day]
-        const bodyH = cats.reduce((h, cat) => h + CAT_HEADER_H + cat.items.length * LINE_H, 0)
-        return 34 + bodyH + 12
-      })
+
+      // Measure pass (no drawing yet) — a scratch canvas context is enough
+      // to run the exact same layout walk used for the real render below.
+      const measureCanvas = document.createElement('canvas')
+      const measureCtx = measureCanvas.getContext('2d')
+      const cardHeights = dateKeys.map(day => TITLE_AREA_H + layoutDayBody(measureCtx, dayCategories[day], 0, 0, false) + 16)
       const rowHeights = []
       for (let r = 0; r < rows; r++) {
         const slice = cardHeights.slice(r * COLS, r * COLS + COLS)
@@ -1694,36 +1743,15 @@ function App() {
 
         ctx.strokeStyle = CARD_BORDER
         ctx.beginPath()
-        ctx.moveTo(x + CARD_PAD, y + 30)
-        ctx.lineTo(x + CARD_W - CARD_PAD, y + 30)
+        ctx.moveTo(x + 16, y + 30)
+        ctx.lineTo(x + CARD_W - 16, y + 30)
         ctx.stroke()
 
         ctx.fillStyle = ACCENT_DARK
         ctx.font = '700 13px sans-serif'
-        ctx.fillText(formatDate(day), x + CARD_PAD, y + 22)
+        ctx.fillText(formatDate(day), x + 16, y + 22)
 
-        let catY = y + 30
-        dayCategories[day].forEach(cat => {
-          const color = cat.cfg?.color || TEAL
-          catY += CAT_HEADER_H
-          ctx.fillStyle = color
-          ctx.font = '700 10px sans-serif'
-          ctx.fillText((cat.cfg?.label || cat.type).toUpperCase(), x + CARD_PAD, catY - 6)
-
-          cat.items.forEach((item, i) => {
-            const ty = catY + i * LINE_H
-            ctx.fillStyle = color
-            ctx.beginPath()
-            ctx.arc(x + CARD_PAD + 3, ty - 4, 3, 0, Math.PI * 2)
-            ctx.fill()
-            ctx.fillStyle = INK
-            ctx.font = '12px sans-serif'
-            const sub = itemSubtitle(item, false)
-            const label = sub ? `${item.title} — ${sub}` : item.title
-            ctx.fillText(label.length > 38 ? label.slice(0, 38) + '…' : label, x + CARD_PAD + 12, ty)
-          })
-          catY += cat.items.length * LINE_H
-        })
+        layoutDayBody(ctx, dayCategories[day], x, y + 30, true)
       })
 
       ctx.fillStyle = MUTED
@@ -1733,7 +1761,7 @@ function App() {
       ctx.textAlign = 'left'
 
       canvas.toBlob(async (blob) => {
-        if (!blob) { shareItineraryAsText(booked, grouped, dateKeys); return }
+        if (!blob) { shareItineraryAsText(dateKeys, dayCategories); return }
         const safeName = selectedTrip.name.replace(/[^a-z0-9]+/gi, '-')
         const file = new File([blob], `${safeName}-itinerary.png`, { type: 'image/png' })
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1759,14 +1787,24 @@ function App() {
           showInfo({ title: 'Image saved', message: 'Your itinerary image downloaded — attach it to a text or email manually.' })
         } catch (err) {
           console.error('Image download fallback failed:', err)
-          shareItineraryAsText(booked, grouped, dateKeys)
+          shareItineraryAsText(dateKeys, dayCategories)
         }
       }, 'image/png')
     } catch (err) {
       console.error('Failed to render itinerary image, falling back to text:', err)
-      shareItineraryAsText(booked, grouped, dateKeys)
+      const grouped2 = {}
+      booked.forEach(item => {
+        const key = getItemDayKey(item) || (item.check_in ? item.check_in.split('T')[0] : null)
+        if (!key) return
+        ;(grouped2[key] = grouped2[key] || []).push(item)
+      })
+      const dateKeys2 = Object.keys(grouped2).sort()
+      const dayCategories2 = {}
+      dateKeys2.forEach(day => { dayCategories2[day] = buildDayCategories(grouped2[day]) })
+      shareItineraryAsText(dateKeys2, dayCategories2)
     }
   }
+
 
   async function generateInviteLink(tripId) {
     try {
@@ -2120,11 +2158,12 @@ function App() {
           )}
           {!isBooking && (
             <div style={{ position: 'absolute', top: '14px', right: '16px', display: 'flex', gap: '4px' }}>
+              <button onClick={() => toggleStar(item)} style={{ ...iconBtn, color: item.is_starred ? GOLD : CARD_BORDER }} title={item.is_starred ? 'Unstar' : 'Star this'}><Star size={16} fill={item.is_starred ? GOLD : 'none'} /></button>
               <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: ACCENT }} title="Edit"><Pencil size={16} /></button>
               <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: CARD_BORDER }} title="Delete"><X size={16} /></button>
             </div>
           )}
-          <div style={{ paddingRight: isBooking ? 0 : '56px', paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '26px' : 0 }}>
+          <div style={{ paddingRight: isBooking ? 0 : '78px', paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '26px' : 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <div style={{ width: '34px', height: '34px', borderRadius: '10px', background: `${borderColor}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 <ItemIcon size={18} color={borderColor} />
@@ -2206,11 +2245,14 @@ function App() {
                   <Plus size={15} />
                 </button>
               )}
+              {!isSuggested && (
+                <button onClick={() => toggleStar(item)} style={{ ...iconBtn, color: item.is_starred ? '#F2C879' : cardMutedColor }} title={item.is_starred ? 'Unstar' : 'Star this'}><Star size={15} fill={item.is_starred ? '#F2C879' : 'none'} /></button>
+              )}
               <button onClick={() => startEditItem(item)} style={{ ...iconBtn, color: isSuggested ? ACCENT : cardTextColor }} title="Edit"><Pencil size={15} /></button>
               <button onClick={() => deleteItem(item.id)} style={{ ...iconBtn, color: isSuggested ? CARD_BORDER : cardMutedColor }} title="Delete"><X size={15} /></button>
             </div>
           )}
-          <div style={{ paddingRight: isBooking ? 0 : (isSuggested ? '92px' : '64px'), paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '20px' : 0 }}>
+          <div style={{ paddingRight: isBooking ? 0 : (isSuggested ? '92px' : '86px'), paddingLeft: (!isBooking && siblings && siblings.length > 1) ? '20px' : 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
               <span style={{ fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.07em', color: isSuggested ? nodeColor : cardMutedColor }}>{categoryLabel}</span>
               {occurrenceLabel && (
@@ -3250,14 +3292,15 @@ function App() {
                   <h2 style={{ fontSize: '16px', fontWeight: '800', color: INK, margin: 0 }}>How this app works</h2>
                 </div>
                 {[
-                  { title: 'Itinerary', body: "The day-by-day read-only view of the trip. Booked plans show solid; suggested ideas show dashed and can be folded away. Use the type filter to focus on just lodging, flights, and so on." },
-                  { title: 'Plan', body: 'Where you add and edit anything — flights, stays, activities, expenses. Tap an item here to change it. Filter the list by type to find something quickly.' },
+                  { title: 'Itinerary', body: "The day-by-day read-only view of the trip. Booked plans show solid; suggested ideas show dashed and can be folded away. Use the type filter to focus on just lodging, activities, and so on." },
+                  { title: 'Plan', body: 'Where you add and edit flights, stays, activities, and other itinerary items. Filter the list by type to find something quickly. Expenses aren\u2019t added here anymore — that all happens on Settle now.' },
                   { title: 'Booked vs Suggested', body: 'Set an item\u2019s status when adding it, or hold down on an Itinerary card for about a second to flip it between the two.' },
+                  { title: 'Starring favorites', body: 'Tap the star in the top right of any booked item (on Itinerary or Plan) to mark it as a favorite. Starred items show up highlighted in the shared itinerary image too — handy for flagging your must-dos after the trip.' },
                   { title: 'Voting on ideas', body: 'On the Ideas tab, tap the arrow on any suggestion to vote for it. Everyone on the trip can vote once per idea, and the most-voted ideas float to the top.' },
                   { title: 'Map', body: 'Every addressed item plotted together, plus one link that opens the whole trip as a route in Google Maps.' },
-                  { title: 'Settle', body: 'Who owes whom, broken down by expense. Filter by person to see just their itemized spend, and tap \u201cShow the math\u201d for the full per-person totals. Tap any item in the lists to jump straight to editing it.' },
+                  { title: 'Settle', body: 'Add and edit every expense here now, alongside who owes whom. \u201cShow the math\u201d gives per-person paid/owed totals, and filtering by person scopes \u201cWhat\u2019s counted\u201d to just their spend. Tap any item in the lists to jump straight to editing it.' },
                   { title: 'Packing', body: 'Add items as "For the group" or "Just for me." Group items are shared with everyone, but each person checks their own copy off — your progress doesn\u2019t affect anyone else\u2019s.' },
-                  { title: 'Share itinerary', body: 'The share icon on Itinerary (or the button below) generates an image of your booked plans, grouped by day, ready to drop into a text or email.' },
+                  { title: 'Share itinerary', body: 'The share icon on Itinerary (or the button below) generates an image of your booked plans, grouped by day and color-coded by category. Flights, car rentals, expenses, and times are left off on purpose \u2014 it\u2019s meant as a quick "what did we do" glance for friends, and starred favorites are marked with a \u2605.' },
                   { title: 'Trip color', body: 'Pick a color or gradient below to change this trip\u2019s banner. Everyone on the trip sees the same one.' },
                 ].map((row, i, arr) => (
                   <div key={row.title} style={{ padding: '10px 0', borderBottom: i < arr.length - 1 ? `0.5px solid ${CARD_BORDER}` : 'none' }}>
