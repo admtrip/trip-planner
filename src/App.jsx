@@ -2438,8 +2438,8 @@ function App() {
     const masterGrouped = {}
     masterTimeline.dated.forEach(i => { (masterGrouped[i.date_key] = masterGrouped[i.date_key] || []).push(i) })
     const masterDates = Object.keys(masterGrouped).sort()
-    const datedItems = items.filter(i => getItemDayKey(i) && (planTypeFilter === 'all' || i.type === planTypeFilter))
-    const undatedItems = items.filter(i => !getItemDayKey(i) && (planTypeFilter === 'all' || i.type === planTypeFilter))
+    const datedItems = items.filter(i => getItemDayKey(i) && i.type !== 'expense' && (planTypeFilter === 'all' || i.type === planTypeFilter))
+    const undatedItems = items.filter(i => !getItemDayKey(i) && i.type !== 'expense' && (planTypeFilter === 'all' || i.type === planTypeFilter))
     const itineraryGrouped = {}
     datedItems.forEach(i => { const k = getItemDayKey(i); (itineraryGrouped[k] = itineraryGrouped[k] || []).push(i) })
     const itineraryDates = Object.keys(itineraryGrouped).sort()
@@ -2919,18 +2919,11 @@ function App() {
                 <label style={{ fontSize: '11px', color: MUTED, fontWeight: '600', display: 'block', marginBottom: '5px' }}>Filter list by type</label>
                 <select value={planTypeFilter} onChange={e => setPlanTypeFilter(e.target.value)} style={inputStyle}>
                   <option value="all">All types</option>
-                  {Object.entries(TYPE_CONFIG).map(([k, cfg]) => (
+                  {Object.entries(TYPE_CONFIG).filter(([k]) => k !== 'expense').map(([k, cfg]) => (
                     <option key={k} value={k}>{cfg.label}</option>
                   ))}
                 </select>
               </div>
-
-              {undatedItems.length > 0 && (
-                <div style={{ marginBottom: '24px' }}>
-                  <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>💵 New Expenses</h3>
-                  {undatedItems.map(item => renderCard(item, item.id, true))}
-                </div>
-              )}
 
               {itineraryDates.length === 0 && undatedItems.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 24px', color: MUTED, fontSize: '14px', background: 'white', borderRadius: '24px' }}>
@@ -3078,6 +3071,29 @@ function App() {
               </div>
 
               <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
+                <button onClick={() => setShowMath(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                  <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>Show the math</h2>
+                  {showMath ? <ChevronUp size={16} color={MUTED} /> : <ChevronDown size={16} color={MUTED} />}
+                </button>
+                {showMath && (
+                  <div style={{ marginTop: '14px' }}>
+                    {members.map((m, i) => {
+                      const paid = totalsPaid[m.user_id] || 0
+                      const net = balances[m.user_id] || 0
+                      return (
+                        <div key={m.user_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: i < members.length - 1 ? `0.5px solid ${CARD_BORDER}` : 'none' }}>
+                          <span style={{ fontSize: '13px', color: INK, fontWeight: '600' }}>{m.user_id === user.id ? 'Me' : m.display_name}</span>
+                          <span style={{ fontSize: '12px', color: MUTED }}>
+                            Paid ${paid.toFixed(2)} &middot; {net >= 0 ? 'Owed' : 'Owes'} ${Math.abs(net).toFixed(2)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
                 <button onClick={() => setShowCountedItems(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                   <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>
                     {settlePersonFilter === 'all' ? `What's counted (${breakdown.length})` : `Paid by ${getMemberName(settlePersonFilter)} (${breakdown.length})`}
@@ -3148,36 +3164,6 @@ function App() {
                   </div>
                 )
               })()}
-
-              <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
-                <button onClick={() => setShowMath(v => !v)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                  <h2 style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: 0 }}>Show the math</h2>
-                  {showMath ? <ChevronUp size={16} color={MUTED} /> : <ChevronDown size={16} color={MUTED} />}
-                </button>
-                {showMath && (
-                  <div style={{ marginTop: '14px' }}>
-                    {members.map((m, i) => {
-                      const paid = totalsPaid[m.user_id] || 0
-                      const net = balances[m.user_id] || 0
-                      return (
-                        <div key={m.user_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: i < members.length - 1 ? `0.5px solid ${CARD_BORDER}` : 'none' }}>
-                          <span style={{ fontSize: '13px', color: INK, fontWeight: '600' }}>{m.user_id === user.id ? 'Me' : m.display_name}</span>
-                          <span style={{ fontSize: '12px', color: MUTED }}>
-                            Paid ${paid.toFixed(2)} &middot; {net >= 0 ? 'Owed' : 'Owes'} ${Math.abs(net).toFixed(2)}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {undatedItems.length > 0 && (
-                <div style={{ marginBottom: '20px' }}>
-                  <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>New Expenses</h3>
-                  {undatedItems.map(item => renderCard(item, item.id, true))}
-                </div>
-              )}
             </>
           )}
 
