@@ -8,7 +8,8 @@ import {
   Map, ClipboardList, Globe, Wallet, Compass, UtensilsCrossed, Ticket, Hotel,
   Car, Plane, StickyNote, Pencil, X, MapPin, Link2, ArrowLeft, CalendarDays,
   ChevronUp, ChevronDown, ChevronRight, Wifi, WifiOff, Users, User, Lightbulb, CheckCircle2, Package, Plus,
-  Smile, HandCoins, PartyPopper, PlaneTakeoff, Settings, LogOut, HelpCircle, Share2, Luggage, Trash2, Star
+  Smile, HandCoins, PartyPopper, PlaneTakeoff, Settings, LogOut, HelpCircle, Share2, Luggage, Trash2, Star,
+  RefreshCw
 } from 'lucide-react'
 
 // ---------- Palette: strictly the 12 named colors — Limestone, Mulberry, Copper Clay, ----------
@@ -148,6 +149,29 @@ const TYPE_CONFIG = {
   flight:    { label: 'Flight',        Icon: Plane,           color: CAT_FLIGHT,    timing: 'flight', confirmation: true  },
   note:      { label: 'Note',          Icon: StickyNote,      color: MUTED,         timing: 'single', confirmation: false },
   expense:   { label: 'Expense',       Icon: Wallet,          color: CAT_FOOD,      timing: 'none',   confirmation: false },
+  // AI-suggested destination options for Group Destination Decision Mode
+  // (see ai-proxy's group_decision_aggregate). Faded Rose — the one named
+  // palette color not already claimed by another category.
+  destination: { label: 'Destination', Icon: MapPin,          color: '#A56F78',     timing: 'none',   confirmation: false },
+}
+
+// Onboarding / per-trip forced-choice pairs, one per taste_profile axis.
+// Order matches the "short round" slice used for returning users with a
+// mature general profile (see submitTripSurvey) — keep the first three
+// as the ones that most matter narrowed down, since only those show for
+// a quick per-trip refresh.
+const THIS_OR_THAT_QUESTIONS = [
+  { axis: 'pace', prompt: 'Which trip sounds more like you?', a: { label: 'Pack every day full', sub: 'Sunrise to sunset, always somewhere new' }, b: { label: 'Leave room to wander', sub: 'A plan, with space to change it' } },
+  { axis: 'splurge', prompt: 'Where do you splurge?', a: { label: 'One incredible splurge', sub: 'Save everywhere else for one big thing' }, b: { label: 'Steady comfort throughout', sub: 'Nothing extravagant, nothing rough' } },
+  { axis: 'setting', prompt: 'City or coast?', a: { label: 'City streets', sub: 'Neighborhoods, markets, nightlife' }, b: { label: 'Somewhere quiet', sub: 'Nature, water, slower mornings' } },
+  { axis: 'food_style', prompt: 'How do you want to eat?', a: { label: 'Hole-in-the-wall', sub: 'Street food, local spots, no reservation' }, b: { label: 'Book the table', sub: 'A real reservation, worth dressing for' } },
+  { axis: 'lodging', prompt: 'Where do you want to stay?', a: { label: 'Boutique & characterful', sub: 'Small, local, full of personality' }, b: { label: 'Big hotel comfort', sub: 'Predictable, amenity-heavy, easy' } },
+  { axis: 'activity_type', prompt: 'What pulls you in?', a: { label: 'Moving your body', sub: 'Hikes, bikes, something active' }, b: { label: 'Taking it in', sub: 'Museums, views, slower sightseeing' } },
+  { axis: 'social_scale', prompt: "Who's the trip for?", a: { label: 'Just us', sub: 'Small group, low key' }, b: { label: 'The more the merrier', sub: 'Bigger group, more energy' } },
+]
+const AXIS_LABELS = {
+  pace: 'Pace', setting: 'Setting', food_style: 'Food style', lodging: 'Lodging',
+  activity_type: 'Activity type', social_scale: 'Social scale', splurge: 'Splurge',
 }
 
 function bookingBorderColor(booking, userId) {
@@ -447,7 +471,7 @@ function MapTab({ items }) {
     )
   }
 
-  const legendEntries = Object.entries(TYPE_CONFIG).filter(([k]) => k !== 'note' && k !== 'expense')
+  const legendEntries = Object.entries(TYPE_CONFIG).filter(([k]) => k !== 'note' && k !== 'expense' && k !== 'destination')
   const directionsUrl = buildDirectionsLink(items)
 
   return (
@@ -618,6 +642,37 @@ function App() {
   const [newPackingScope, setNewPackingScope] = useState('personal')
   const [syncingCalendar, setSyncingCalendar] = useState(false)
 
+  // ---------- AI layer (Phase 1): taste profile, survey, this-or-that, Group Destination Decision Mode ----------
+  const [view, setView] = useState('trips') // 'trips' | 'account' — the new top-level Account screen, alongside the trip list
+  const [tasteProfile, setTasteProfile] = useState(null)
+  const [postTripFlow, setPostTripFlow] = useState(null) // { step: 'survey' | 'thisOrThat', trip } — runs right after creating a trip
+  const [surveyVibe, setSurveyVibe] = useState('')
+  const [surveyBudget, setSurveyBudget] = useState('')
+  const [surveyGroupSize, setSurveyGroupSize] = useState(2)
+  const [surveyWhoFor, setSurveyWhoFor] = useState('')
+  const [surveyContinents, setSurveyContinents] = useState([])
+  const [surveyClimate, setSurveyClimate] = useState('no_preference')
+  const [surveyMaxFlightHours, setSurveyMaxFlightHours] = useState(null)
+  const [surveyExcludedRegions, setSurveyExcludedRegions] = useState([])
+  const [surveyExcludeInput, setSurveyExcludeInput] = useState('')
+  const [surveyDietary, setSurveyDietary] = useState([])
+  const [surveyDietaryInput, setSurveyDietaryInput] = useState('')
+  const [surveyAccessibility, setSurveyAccessibility] = useState('')
+  const [surveyKids, setSurveyKids] = useState(false)
+  const [surveyIsSplurge, setSurveyIsSplurge] = useState(false)
+  const [savingSurvey, setSavingSurvey] = useState(false)
+  const [thisOrThatIndex, setThisOrThatIndex] = useState(0)
+  const [thisOrThatAnswers, setThisOrThatAnswers] = useState({})
+  const [thisOrThatIsGeneral, setThisOrThatIsGeneral] = useState(true)
+  const [savingThisOrThat, setSavingThisOrThat] = useState(false)
+  const [excludedRegionInput, setExcludedRegionInput] = useState('')
+  const [editingSummary, setEditingSummary] = useState(false)
+  const [summaryDraft, setSummaryDraft] = useState('')
+  const [decisionProgress, setDecisionProgress] = useState(null) // { responded_count, total_members }
+  const [myDecisionSurvey, setMyDecisionSurvey] = useState(undefined) // undefined = still loading; null = not submitted yet
+  const [decisionSuggestionsLoading, setDecisionSuggestionsLoading] = useState(false)
+  const [dismissedSuggestionIds, setDismissedSuggestionIds] = useState({}) // local-only "not for me" hide, per item id
+
   // Loads the two app fonts once per session. Ideally this link would live in
   // index.html instead, which is faster (no flash of fallback font) — move it
   // there if you get a chance: <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -738,7 +793,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (user) { fetchTrips(); handleInviteToken() }
+    if (user) { fetchTrips(); handleInviteToken(); fetchTasteProfile() }
   }, [user])
 
   useEffect(() => {
@@ -752,6 +807,22 @@ function App() {
       fetchVotes(selectedTrip.id)
     }
   }, [selectedTrip])
+
+  // A trip in 'deciding' status shows a dedicated screen instead of the
+  // normal tabs (see the render cascade below) — this keeps its own
+  // small bit of state fresh: whether the current user has submitted
+  // their survey yet, and (privacy-safe, count only) how many members
+  // have responded so far.
+  useEffect(() => {
+    if (selectedTrip?.status !== 'deciding') { setMyDecisionSurvey(undefined); setDecisionProgress(null); return }
+    let cancelled = false
+    supabase.from('trip_survey_responses').select('*').eq('trip_id', selectedTrip.id).eq('user_id', user.id).maybeSingle()
+      .then(({ data, error }) => { if (!cancelled) { if (error) console.error('Failed to load your survey response:', error); setMyDecisionSurvey(data || null) } })
+    callAiProxy('decision_progress', { trip_id: selectedTrip.id })
+      .then(data => { if (!cancelled) setDecisionProgress(data) })
+      .catch(err => console.error('Failed to load decision progress:', err))
+    return () => { cancelled = true }
+  }, [selectedTrip?.id, selectedTrip?.status, items.length])
 
   // Whenever the items list changes, make sure we have a live USD rate for
   // every currency actually used on a cost — since costs can now be entered
@@ -1052,6 +1123,267 @@ function App() {
     setPackingItems(prev => prev.filter(p => p.id !== id))
   }
 
+  // ================== AI layer (Phase 1) ==================
+
+  async function fetchTasteProfile() {
+    try {
+      const { data, error } = await supabase.from('taste_profile').select('*').eq('user_id', user.id).maybeSingle()
+      if (error) throw error
+      setTasteProfile(data)
+    } catch (err) {
+      console.error('Failed to fetch taste profile:', err)
+    }
+  }
+
+  // The client never calls the Claude API directly — everything AI-related
+  // routes through this one Edge Function, same boundary Card IQ draws
+  // around SimpleFIN with simplefin-sync.
+  async function callAiProxy(action, payload = {}) {
+    const { data, error } = await supabase.functions.invoke('ai-proxy', { body: { action, ...payload } })
+    if (error) throw error
+    return data
+  }
+
+  // Every AI feature is on by default (per the PRD's Opt-In Granularity
+  // section) — a key that's never been toggled, or a taste_profile row
+  // that doesn't exist yet, both read as "on."
+  function aiToggleOn(key) {
+    const toggles = tasteProfile?.ai_toggles
+    return toggles && key in toggles ? !!toggles[key] : true
+  }
+
+  function resetSurveyForm() {
+    setSurveyVibe(''); setSurveyBudget(''); setSurveyGroupSize(2); setSurveyWhoFor('')
+    setSurveyContinents([]); setSurveyClimate('no_preference'); setSurveyMaxFlightHours(null)
+    setSurveyExcludedRegions([]); setSurveyExcludeInput('')
+    setSurveyDietary([]); setSurveyDietaryInput(''); setSurveyAccessibility(''); setSurveyKids(false); setSurveyIsSplurge(false)
+  }
+
+  // Pre-fills the survey from the user's most recent past trip's answers
+  // rather than trying to parse taste_profile.signals (freeform,
+  // LLM-authored JSON) into exact pill selections — a concrete prior
+  // answer is a far more reliable default than reverse-engineering one
+  // out of a summary blob, and it's still "pre-filled, editable" either way.
+  async function prefillSurveyFromHistory() {
+    const { data } = await supabase.from('trip_survey_responses').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1)
+    const last = data?.[0]
+    if (!last) return
+    setSurveyVibe(last.vibe || ''); setSurveyBudget(last.budget_tier || '')
+    setSurveyWhoFor(last.who_for || ''); setSurveyContinents(last.continent_preference || [])
+    setSurveyClimate(last.climate_preference || 'no_preference'); setSurveyMaxFlightHours(last.max_flight_hours ?? null)
+    setSurveyDietary(last.dietary_restrictions || []); setSurveyAccessibility(last.accessibility_needs || '')
+    setSurveyKids(last.travel_with_kids || false)
+  }
+
+  async function submitTripSurvey() {
+    const trip = postTripFlow?.trip
+    if (!trip) return
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Saving your answers requires a connection.' }); return }
+    setSavingSurvey(true)
+    const { error } = await supabase.from('trip_survey_responses').upsert({
+      trip_id: trip.id,
+      user_id: user.id,
+      vibe: surveyVibe || null,
+      budget_tier: surveyBudget || null,
+      group_size: surveyGroupSize || null,
+      who_for: surveyWhoFor || null,
+      region: trip.destination || null,
+      continent_preference: surveyContinents.length ? surveyContinents : null,
+      climate_preference: surveyClimate,
+      max_flight_hours: surveyMaxFlightHours,
+      excluded_regions: surveyExcludedRegions.length ? surveyExcludedRegions : null,
+      dietary_restrictions: surveyDietary.length ? surveyDietary : null,
+      accessibility_needs: surveyAccessibility || null,
+      travel_with_kids: surveyKids,
+      is_splurge: surveyIsSplurge,
+    }, { onConflict: 'trip_id,user_id' })
+    setSavingSurvey(false)
+    if (error) { console.error('Failed to save trip survey:', error); showInfo({ title: 'Could not save your answers', message: error.message }); return }
+    haptic('light')
+    // Mature general profile (all 7 axes already answered) → a short
+    // per-trip refresh instead of the full onboarding round.
+    const { data: generalAnswers } = await supabase.from('this_or_that_responses').select('axis').eq('user_id', user.id).is('trip_id', null)
+    setThisOrThatIsGeneral((generalAnswers?.length || 0) < THIS_OR_THAT_QUESTIONS.length)
+    setThisOrThatIndex(0)
+    setThisOrThatAnswers({})
+    setPostTripFlow(prev => ({ ...prev, step: 'thisOrThat' }))
+  }
+
+  function currentThisOrThatQuestions() {
+    return thisOrThatIsGeneral ? THIS_OR_THAT_QUESTIONS : THIS_OR_THAT_QUESTIONS.slice(0, 3)
+  }
+
+  function advanceThisOrThat() {
+    const questions = currentThisOrThatQuestions()
+    if (thisOrThatIndex + 1 < questions.length) setThisOrThatIndex(i => i + 1)
+    else finishThisOrThat()
+  }
+
+  function answerThisOrThat(axis, choice) {
+    haptic('light')
+    setThisOrThatAnswers(prev => ({ ...prev, [axis]: choice }))
+    advanceThisOrThat()
+  }
+
+  async function finishThisOrThat() {
+    const trip = postTripFlow?.trip
+    setSavingThisOrThat(true)
+    const tripId = thisOrThatIsGeneral ? null : (trip?.id || null)
+    const rows = Object.entries(thisOrThatAnswers).map(([axis, choice]) => ({ user_id: user.id, trip_id: tripId, axis, choice }))
+    if (rows.length) {
+      const { error } = await supabase.from('this_or_that_responses').upsert(rows, { onConflict: 'user_id,trip_scope,axis' })
+      if (error) console.error('Failed to save this-or-that answers:', error)
+    }
+    setSavingThisOrThat(false)
+    // Fire-and-forget: seed or refresh the taste profile summary now that
+    // there's something new to synthesize from — Account settings
+    // shouldn't sit empty until a later phase's trip-recap job exists.
+    callAiProxy('refresh_taste_profile').then(fetchTasteProfile).catch(err => console.error('Taste profile refresh failed:', err))
+    resetSurveyForm()
+    setPostTripFlow(null)
+    if (trip) { fetchTrips(); setSelectedTrip(trip); setActiveTab('master') }
+  }
+
+  function skipPostTripFlow() {
+    const trip = postTripFlow?.trip
+    resetSurveyForm()
+    setPostTripFlow(null)
+    if (trip) { fetchTrips(); setSelectedTrip(trip); setActiveTab('master') }
+  }
+
+  // ---------- Group Destination Decision Mode ----------
+
+  async function generateDecisionSuggestions() {
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Generating suggestions requires a connection.' }); return }
+    setDecisionSuggestionsLoading(true)
+    try {
+      await callAiProxy('group_decision_aggregate', { trip_id: selectedTrip.id })
+      await fetchItems(selectedTrip.id)
+    } catch (err) {
+      console.error('Failed to generate destination suggestions:', err)
+      showInfo({ title: 'Could not generate suggestions', message: err.message || 'Something went wrong — try again in a moment.' })
+    }
+    setDecisionSuggestionsLoading(false)
+  }
+
+  function refreshDecisionSuggestions() {
+    const destinationItemIds = items.filter(i => i.type === 'destination').map(i => i.id)
+    showConfirm({
+      title: 'Refresh suggestions?',
+      message: "This clears the current shortlist and everyone's votes on it, then generates a new one.",
+      confirmLabel: 'Refresh',
+      danger: true,
+      onConfirm: async () => {
+        if (destinationItemIds.length) {
+          await supabase.from('suggestion_votes').delete().in('item_id', destinationItemIds)
+          await supabase.from('itinerary_items').delete().in('id', destinationItemIds)
+        }
+        setDismissedSuggestionIds({})
+        generateDecisionSuggestions()
+      }
+    })
+  }
+
+  // Voting on a destination option doubles as the PRD's "liked" signal —
+  // in Group Destination Decision Mode, voting for an option already
+  // means "I like this one." A separate explicit action below covers
+  // the PRD's "not for me," which is a distinct, negative signal.
+  async function voteForDestination(item) {
+    const alreadyVoted = hasVoted(item.id)
+    await toggleVote(item)
+    if (!alreadyVoted) {
+      const { error } = await supabase.from('suggestion_feedback').upsert({
+        user_id: user.id, trip_id: item.trip_id, suggestion_title: item.title, suggestion_category: item.type, feedback: 'liked'
+      }, { onConflict: 'user_id,trip_id,suggestion_title' })
+      if (error) console.error('Failed to record suggestion feedback:', error)
+    }
+  }
+
+  async function markSuggestionNotForMe(item) {
+    const { error } = await supabase.from('suggestion_feedback').upsert({
+      user_id: user.id, trip_id: item.trip_id, suggestion_title: item.title, suggestion_category: item.type, feedback: 'not_for_me'
+    }, { onConflict: 'user_id,trip_id,suggestion_title' })
+    if (error) { console.error('Failed to record suggestion feedback:', error); return }
+    haptic('light')
+    setDismissedSuggestionIds(prev => ({ ...prev, [item.id]: true }))
+  }
+
+  // Organizer action: picks a winner (highest-voted by default, but any
+  // option can be finalized directly), sets it as the trip's real
+  // destination, and clears the now-resolved shortlist. The losing
+  // options were only ever there to be voted on — nothing else
+  // references them, so removing them keeps the trip's real itinerary
+  // suggestions clean afterward.
+  async function finalizeDecision(winningItem) {
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Finalizing requires a connection.' }); return }
+    const destinationItemIds = items.filter(i => i.type === 'destination').map(i => i.id)
+    const { error } = await supabase.from('trips').update({
+      destination: winningItem.title, status: 'active', decision_resolved_at: new Date().toISOString()
+    }).eq('id', selectedTrip.id)
+    if (error) { console.error('Failed to finalize destination:', error); showInfo({ title: 'Could not finalize', message: error.message }); return }
+    if (destinationItemIds.length) await supabase.from('itinerary_items').delete().in('id', destinationItemIds)
+    haptic('success')
+    fetchTrips()
+    setSelectedTrip(prev => ({ ...prev, destination: winningItem.title, status: 'active' }))
+    fetchItems(selectedTrip.id)
+  }
+
+  // ---------- Account settings: taste profile, AI toggles, reset ----------
+
+  async function toggleAiFeature(key) {
+    if (!isOnline) { showInfo({ title: "You're offline", message: 'Saving requires a connection.' }); return }
+    const nextToggles = { ...(tasteProfile?.ai_toggles || {}), [key]: !aiToggleOn(key) }
+    const { error } = await supabase.from('taste_profile').upsert({ user_id: user.id, ai_toggles: nextToggles }, { onConflict: 'user_id' })
+    if (error) { console.error('Failed to update AI toggle:', error); showInfo({ title: 'Could not save', message: error.message }); return }
+    haptic('light')
+    setTasteProfile(prev => ({ ...(prev || {}), ai_toggles: nextToggles }))
+  }
+
+  async function addExcludedRegion() {
+    const value = excludedRegionInput.trim()
+    if (!value) return
+    const next = [...new Set([...(tasteProfile?.excluded_regions || []), value])]
+    const { error } = await supabase.from('taste_profile').upsert({ user_id: user.id, excluded_regions: next }, { onConflict: 'user_id' })
+    if (error) { console.error('Failed to add excluded region:', error); showInfo({ title: 'Could not save', message: error.message }); return }
+    setTasteProfile(prev => ({ ...(prev || {}), excluded_regions: next }))
+    setExcludedRegionInput('')
+  }
+
+  async function removeExcludedRegion(value) {
+    const next = (tasteProfile?.excluded_regions || []).filter(r => r !== value)
+    const { error } = await supabase.from('taste_profile').update({ excluded_regions: next }).eq('user_id', user.id)
+    if (error) { console.error('Failed to remove excluded region:', error); return }
+    setTasteProfile(prev => ({ ...(prev || {}), excluded_regions: next }))
+  }
+
+  async function saveSummaryEdit() {
+    const { error } = await supabase.from('taste_profile').upsert({ user_id: user.id, summary_text: summaryDraft }, { onConflict: 'user_id' })
+    if (error) { console.error('Failed to save taste profile summary:', error); showInfo({ title: 'Could not save', message: error.message }); return }
+    setTasteProfile(prev => ({ ...(prev || {}), summary_text: summaryDraft }))
+    setEditingSummary(false)
+  }
+
+  // Clears structured signals, this-or-that responses, and the summary —
+  // exactly what the PRD names, nothing more. Past trips, itineraries,
+  // and expenses are never touched; per-trip survey answers stay too,
+  // since those describe specific trips, not "what's been learned."
+  function resetRecommendations() {
+    showConfirm({
+      title: 'Reset your recommendations?',
+      message: "This clears your taste profile — structured signals, this-or-that answers, and your summary. Your trips, itineraries, and expenses stay exactly as they are.\n\nThis can't be undone.",
+      confirmLabel: 'Reset',
+      danger: true,
+      onConfirm: async () => {
+        const { error } = await supabase.from('taste_profile').upsert({
+          user_id: user.id, signals: {}, summary_text: null, excluded_regions: [], last_regenerated_at: null
+        }, { onConflict: 'user_id' })
+        if (error) { console.error('Failed to reset recommendations:', error); showInfo({ title: 'Could not reset', message: error.message }); return }
+        await supabase.from('this_or_that_responses').delete().eq('user_id', user.id)
+        setTasteProfile(prev => ({ ...(prev || {}), signals: {}, summary_text: null, excluded_regions: [], last_regenerated_at: null }))
+      }
+    })
+  }
+
   async function detectTimezoneForDestination(lat, lng) {
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
     if (!apiKey) return
@@ -1130,24 +1462,45 @@ function App() {
     }
     if (!isOnline) { showInfo({ title: "You're offline", message: "Trips can't be created or edited until you're back online." }); return }
     if (editingTrip) {
-      const { error } = await supabase.from('trips').update({
-        name: tripName, destination, start_date: startDate || null, end_date: endDate || null, timezone,
+      const update = {
+        name: tripName, destination: destination || null, start_date: startDate || null, end_date: endDate || null, timezone,
         local_currency: localCurrency
-      }).eq('id', editingTrip.id)
+      }
+      // Manually filling in a destination on a 'deciding' trip resolves
+      // it the same way finalizing a vote does — otherwise the trip
+      // would show a destination but stay stuck on the decision screen.
+      const resolvingManually = editingTrip.status === 'deciding' && destination.trim()
+      if (resolvingManually) update.status = 'active'
+      const { error } = await supabase.from('trips').update(update).eq('id', editingTrip.id)
       if (error) { console.error('Failed to update trip:', error); showInfo({ title: 'Could not save changes', message: error.message }); return }
+      // Same cleanup finalizeDecision does — any AI-suggested destination
+      // options that were up for a vote are no longer relevant once the
+      // destination is set some other way.
+      if (resolvingManually) await supabase.from('itinerary_items').delete().eq('trip_id', editingTrip.id).eq('type', 'destination')
       cancelEditTrip()
       fetchTrips()
       return
     }
+    // No destination yet → Group Destination Decision Mode: the trip is
+    // created so members can be invited and submit their own survey
+    // answers before anyone picks a place. Applies the same way whether
+    // it ends up solo or a full group — a solo "deciding" trip is just a
+    // decision round with one respondent.
     const { data, error } = await supabase.from('trips').insert({
-      name: tripName, destination, start_date: startDate || null, end_date: endDate || null,
-      timezone, local_currency: localCurrency, created_by: user.id
+      name: tripName, destination: destination || null, start_date: startDate || null, end_date: endDate || null,
+      timezone, local_currency: localCurrency, created_by: user.id,
+      status: destination.trim() ? 'active' : 'deciding'
     }).select().single()
     if (error) { console.error('Failed to create trip:', error); showInfo({ title: 'Could not create trip', message: error.message }); return }
     if (data) {
       await supabase.from('trip_members').insert({ trip_id: data.id, user_id: user.id, role: 'owner' })
       setTripName(''); setDestination(''); setStartDate(''); setEndDate(''); setLocalCurrency('USD')
       fetchTrips()
+      // Per the PRD, the survey runs at the start of every new trip, not
+      // just once at onboarding — pre-filled from history for a
+      // returning user, but always shown so every answer stays editable.
+      await prefillSurveyFromHistory()
+      setPostTripFlow({ step: 'survey', trip: data })
     }
   }
 
@@ -2354,6 +2707,19 @@ function App() {
     }}>{label}</button>
   )
 
+  // ---------- AI layer: shared survey/this-or-that/account screen styles ----------
+  const surveyLabelStyle = { fontSize: '12px', color: MUTED, fontWeight: '700', display: 'block', marginBottom: '8px', letterSpacing: '0.02em', textTransform: 'uppercase' }
+  const stepperBtnStyle = { width: '30px', height: '30px', borderRadius: '50%', background: BG, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', color: INK, fontWeight: '700', cursor: 'pointer', fontFamily: FONT }
+  const pillStyle = (active, fill = false) => ({
+    padding: '10px 16px', borderRadius: '999px', fontSize: '13px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT,
+    whiteSpace: 'nowrap', border: `1.5px solid ${active ? GRADIENT : CARD_BORDER}`,
+    background: active ? GRADIENT : 'white', color: active ? BG : INK,
+    ...(fill ? { flex: 1, textAlign: 'center' } : {})
+  })
+  const cardStyle = { background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '12px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }
+  const cardTitleStyle = { fontSize: '16px', fontWeight: '800', color: INK, margin: '0 0 4px' }
+  const destructiveBtnStyle = { width: '100%', padding: '13px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', background: 'white', color: '#A32D2D', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }
+
   const splitSection = (splitType, setSplitType, splitMethod, setSplitMethod, selectedMems, setSelectedMems, customAmounts, setCustomAmounts, cost, evenAmount, getSplitMems, isPrivate = null, setIsPrivate = null) => (
     <div style={sectionBox}>
       <label style={{ fontSize: '11px', color: MUTED, fontWeight: '600', display: 'block', marginBottom: '8px' }}>Split between</label>
@@ -2414,6 +2780,402 @@ function App() {
     </div>
   )
 
+  // ================== AI layer (Phase 1): render helpers ==================
+
+  function renderSurveyScreen() {
+    const trip = postTripFlow.trip
+    const continentOptions = ['US', 'Europe', 'Asia', 'Latin America', 'Anywhere']
+    const toggleContinent = (c) => {
+      if (c === 'Anywhere') { setSurveyContinents(prev => prev.includes('Anywhere') ? [] : ['Anywhere']); return }
+      setSurveyContinents(prev => {
+        const withoutAnywhere = prev.filter(x => x !== 'Anywhere')
+        return withoutAnywhere.includes(c) ? withoutAnywhere.filter(x => x !== c) : [...withoutAnywhere, c]
+      })
+    }
+    return (
+      <div style={{ minHeight: '100vh', background: BG, fontFamily: FONT, paddingBottom: '48px' }}>
+        <div style={{ padding: 'max(28px, calc(20px + env(safe-area-inset-top))) 24px 8px' }}>
+          <p style={{ fontSize: '13px', color: MUTED, fontWeight: '600', margin: '0 0 14px' }}>{trip.name}</p>
+          <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: '24px', fontWeight: '600', color: INK, margin: '0 0 6px' }}>Tell us about this trip</h1>
+          <p style={{ fontSize: '13px', color: MUTED, margin: 0, lineHeight: 1.5 }}>A few questions so suggestions actually fit — every answer here is just for this trip, and you can change any of it.</p>
+          {tasteProfile?.summary_text && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginTop: '14px', padding: '7px 12px', borderRadius: '999px', background: 'rgba(63,115,114,0.12)' }}>
+              <CheckCircle2 size={14} color={TEAL} />
+              <span style={{ fontSize: '12px', color: TEAL, fontWeight: '700' }}>Pre-filled from your taste profile — edit anything</span>
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: '18px 24px 0' }}>
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>Vibe</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              {['Relaxed', 'Balanced', 'Adventurous', 'Packed'].map(v => (
+                <button key={v} onClick={() => setSurveyVibe(v)} style={pillStyle(surveyVibe === v)}>{v}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>Who's this trip for</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              {['Solo', 'Couple', 'Friend group', 'Family with kids', 'Work trip'].map(v => (
+                <button key={v} onClick={() => setSurveyWhoFor(v)} style={pillStyle(surveyWhoFor === v)}>{v}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>Group size</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', background: 'white', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', padding: '6px 16px', width: 'fit-content' }}>
+              <button onClick={() => setSurveyGroupSize(n => Math.max(1, n - 1))} style={stepperBtnStyle}>−</button>
+              <span style={{ fontSize: '16px', fontWeight: '700', color: INK, minWidth: '16px', textAlign: 'center' }}>{surveyGroupSize}</span>
+              <button onClick={() => setSurveyGroupSize(n => n + 1)} style={stepperBtnStyle}>+</button>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>Budget</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {['Budget', 'Moderate', 'Splurge'].map(v => (
+                <button key={v} onClick={() => setSurveyBudget(v)} style={pillStyle(surveyBudget === v, true)}>{v}</button>
+              ))}
+            </div>
+          </div>
+
+          {!trip.destination && (
+            <div style={{ marginBottom: '22px', padding: '14px', background: 'rgba(110,59,70,0.08)', borderRadius: '14px', border: `1px dashed ${ACCENT}` }}>
+              <p style={{ fontSize: '13px', fontWeight: '700', color: INK, margin: '0 0 4px' }}>Deciding as a group</p>
+              <p style={{ fontSize: '12px', color: MUTED, margin: 0, lineHeight: 1.5 }}>You left the destination blank, so this trip is in Group Destination Decision Mode. Your answers below (plus everyone else's) feed the AI-suggested shortlist you'll vote on.</p>
+            </div>
+          )}
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>Continent</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              {continentOptions.map(c => (
+                <button key={c} onClick={() => toggleContinent(c)} style={pillStyle(surveyContinents.includes(c))}>{c}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>How far are you willing to fly</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {[{ label: 'Short hop', hrs: 3 }, { label: 'A few hours', hrs: 8 }, { label: 'Anywhere', hrs: null }].map(opt => (
+                <button key={opt.label} onClick={() => setSurveyMaxFlightHours(opt.hrs)} style={pillStyle(surveyMaxFlightHours === opt.hrs, true)}>{opt.label}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>Climate</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {[{ label: 'Warm', value: 'warm' }, { label: 'Cool', value: 'cool' }, { label: 'No preference', value: 'no_preference' }].map(opt => (
+                <button key={opt.value} onClick={() => setSurveyClimate(opt.value)} style={pillStyle(surveyClimate === opt.value, true)}>{opt.label}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '22px' }}>
+            <label style={surveyLabelStyle}>Not this trip</label>
+            {surveyExcludedRegions.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+                {surveyExcludedRegions.map(r => (
+                  <button key={r} onClick={() => setSurveyExcludedRegions(prev => prev.filter(x => x !== r))} style={pillStyle(true)}>{r} ×</button>
+                ))}
+              </div>
+            )}
+            <input value={surveyExcludeInput} onChange={e => setSurveyExcludeInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && surveyExcludeInput.trim()) { setSurveyExcludedRegions(prev => [...prev, surveyExcludeInput.trim()]); setSurveyExcludeInput('') } }}
+              placeholder="Add a place to skip, then Enter" style={inputStyle} />
+            <p style={{ fontSize: '12px', color: MUTED, margin: '8px 0 0', lineHeight: 1.5 }}>Just for this trip. For places you never want suggested, add them in Account settings instead.</p>
+          </div>
+
+          <div style={{ background: 'white', borderRadius: '18px', padding: '16px', marginBottom: '22px', border: `1.5px solid ${CARD_BORDER}` }}>
+            <p style={{ fontSize: '13px', fontWeight: '800', color: INK, margin: '0 0 4px' }}>🔒 Always respected</p>
+            <p style={{ fontSize: '12px', color: MUTED, margin: '0 0 14px', lineHeight: 1.5 }}>These are hard constraints — every suggestion honors them exactly, never overridden by your taste profile.</p>
+
+            <label style={surveyLabelStyle}>Dietary restrictions</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '16px' }}>
+              {surveyDietary.map(d => (
+                <button key={d} onClick={() => setSurveyDietary(prev => prev.filter(x => x !== d))} style={pillStyle(true)}>{d} ×</button>
+              ))}
+              <input value={surveyDietaryInput} onChange={e => setSurveyDietaryInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && surveyDietaryInput.trim()) { setSurveyDietary(prev => [...prev, surveyDietaryInput.trim()]); setSurveyDietaryInput('') } }}
+                placeholder="Add, then Enter" style={{ ...inputStyle, width: 'auto', flex: 1, minWidth: '140px' }} />
+            </div>
+
+            <label style={surveyLabelStyle}>Accessibility needs</label>
+            <input value={surveyAccessibility} onChange={e => setSurveyAccessibility(e.target.value)} placeholder="None specified" style={{ ...inputStyle, marginBottom: '16px' }} />
+
+            <label style={{ ...surveyLabelStyle, marginBottom: '8px' }}>Traveling with kids</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button onClick={() => setSurveyKids(false)} style={pillStyle(!surveyKids, true)}>No</button>
+              <button onClick={() => setSurveyKids(true)} style={pillStyle(surveyKids, true)}>Yes</button>
+            </div>
+          </div>
+
+          <button onClick={submitTripSurvey} disabled={savingSurvey} style={{ width: '100%', padding: '16px', border: 'none', borderRadius: '16px', background: ACCENT, color: BG, fontSize: '15px', fontWeight: '700', cursor: savingSurvey ? 'default' : 'pointer', opacity: savingSurvey ? 0.6 : 1, fontFamily: FONT, marginBottom: '12px' }}>
+            {savingSurvey ? 'Saving…' : 'Continue'}
+          </button>
+          <button onClick={skipPostTripFlow} style={{ width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: '13px', cursor: 'pointer', fontFamily: FONT, padding: '4px', textAlign: 'center' }}>Skip for now</button>
+        </div>
+        {renderModal()}
+      </div>
+    )
+  }
+
+  function renderThisOrThatScreen() {
+    const questions = currentThisOrThatQuestions()
+    const q = questions[thisOrThatIndex]
+    return (
+      <div style={{ minHeight: '100vh', background: BG, fontFamily: FONT, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: 'max(28px, calc(20px + env(safe-area-inset-top))) 24px 8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+            <span style={{ fontSize: '13px', color: MUTED, fontWeight: '600', flex: 1 }}>Quick-fire round</span>
+            <span style={{ fontSize: '12px', color: MUTED, fontWeight: '700' }}>{thisOrThatIndex + 1} of {questions.length}</span>
+          </div>
+          <div style={{ display: 'flex', gap: '5px', marginBottom: '26px' }}>
+            {questions.map((_, i) => (
+              <div key={i} style={{ flex: 1, height: '4px', borderRadius: '2px', background: i <= thisOrThatIndex ? GRADIENT : 'rgba(69,98,120,0.25)' }} />
+            ))}
+          </div>
+          <p style={{ fontSize: '11px', fontWeight: '700', letterSpacing: '0.06em', textTransform: 'uppercase', color: TEAL, margin: '0 0 6px' }}>{AXIS_LABELS[q.axis] || q.axis}</p>
+          <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: '22px', fontWeight: '600', color: INK, margin: '0 0 24px', lineHeight: 1.3 }}>{q.prompt}</h1>
+        </div>
+
+        <div style={{ padding: '0 24px', display: 'flex', flexDirection: 'column', gap: '14px', flex: 1 }}>
+          {[q.a, q.b].map((option, i) => (
+            <button key={i} onClick={() => answerThisOrThat(q.axis, i === 0 ? 'a' : 'b')} style={{
+              textAlign: 'left', border: 'none', borderRadius: '20px', overflow: 'hidden', cursor: 'pointer', padding: 0,
+              boxShadow: '0 8px 24px rgba(43,52,64,0.18)', background: 'white', fontFamily: FONT
+            }}>
+              <div style={{ height: '90px', background: i === 0 ? 'linear-gradient(150deg, #3F4436 0%, #94713E 100%)' : 'linear-gradient(150deg, #6E3B46 0%, #594D68 100%)' }} />
+              <div style={{ padding: '16px' }}>
+                <p style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: '0 0 4px' }}>{option.label}</p>
+                <p style={{ fontSize: '12px', color: MUTED, margin: 0 }}>{option.sub}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div style={{ padding: '24px' }}>
+          {savingThisOrThat && <p style={{ textAlign: 'center', fontSize: '12px', color: MUTED, margin: '0 0 8px' }}>Saving…</p>}
+          <p onClick={advanceThisOrThat} style={{ textAlign: 'center', fontSize: '12px', color: MUTED, margin: 0, textDecoration: 'underline', cursor: 'pointer' }}>Skip this one</p>
+        </div>
+        {renderModal()}
+      </div>
+    )
+  }
+
+  function renderAccountScreen() {
+    return (
+      <div style={{ minHeight: '100vh', background: BG, fontFamily: FONT, paddingBottom: '40px' }}>
+        <div style={{ padding: 'max(28px, calc(20px + env(safe-area-inset-top))) 24px 18px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button onClick={() => setView('trips')} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex' }}>
+            <ArrowLeft size={22} color={INK} />
+          </button>
+          <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: '22px', fontWeight: '600', color: INK, margin: 0 }}>Account</h1>
+        </div>
+
+        <div style={{ padding: '0 20px' }}>
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '4px' }}>
+              <p style={cardTitleStyle}>Your taste profile</p>
+              {!editingSummary && (
+                <button onClick={() => { setSummaryDraft(tasteProfile?.summary_text || ''); setEditingSummary(true) }} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', padding: '2px', flexShrink: 0 }}>
+                  <Pencil size={16} color={MUTED} />
+                </button>
+              )}
+            </div>
+            {tasteProfile?.last_regenerated_at && (
+              <p style={{ fontSize: '11px', color: MUTED, margin: '0 0 12px' }}>Last updated {new Date(tasteProfile.last_regenerated_at).toLocaleDateString()}</p>
+            )}
+            {editingSummary ? (
+              <>
+                <textarea value={summaryDraft} onChange={e => setSummaryDraft(e.target.value)} rows={5}
+                  style={{ ...inputStyle, resize: 'vertical', marginBottom: '10px' }} />
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                  <button onClick={() => setEditingSummary(false)} style={{ flex: 1, padding: '10px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '12px', background: 'white', color: MUTED, fontSize: '13px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+                  <button onClick={saveSummaryEdit} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: '12px', background: ACCENT, color: BG, fontSize: '13px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>Save</button>
+                </div>
+              </>
+            ) : (
+              <p style={{ fontSize: '14px', color: tasteProfile?.summary_text ? INK : MUTED, lineHeight: 1.6, margin: '0 0 14px', padding: '14px', background: BG, borderRadius: '14px' }}>
+                {tasteProfile?.summary_text || 'Nothing yet — complete a trip survey and quick-fire round to build your profile.'}
+              </p>
+            )}
+            <p style={{ fontSize: '12px', color: MUTED, margin: '0 0 14px' }}>Group members never see this — suggestions explain themselves without naming whose preference they came from.</p>
+
+            <div style={{ borderTop: `0.5px solid ${CARD_BORDER}`, paddingTop: '14px' }}>
+              <p style={{ fontSize: '13px', fontWeight: '700', color: INK, margin: '0 0 8px' }}>Places you'd rather skip</p>
+              {(tasteProfile?.excluded_regions || []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                  {tasteProfile.excluded_regions.map(r => (
+                    <button key={r} onClick={() => removeExcludedRegion(r)} style={pillStyle(true)}>{r} ×</button>
+                  ))}
+                </div>
+              )}
+              <input value={excludedRegionInput} onChange={e => setExcludedRegionInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') addExcludedRegion() }}
+                placeholder="Add a place, then Enter" style={inputStyle} />
+              <p style={{ fontSize: '11px', color: MUTED, margin: '8px 0 0' }}>Never suggested, on any trip, until you remove it here.</p>
+            </div>
+          </div>
+
+          <div style={cardStyle}>
+            <p style={cardTitleStyle}>AI suggestions</p>
+            <p style={{ fontSize: '12px', color: MUTED, margin: '0 0 4px' }}>On by default. Turning everything off still leaves Trippy fully usable — nothing in the app depends on AI.</p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderTop: `0.5px solid ${CARD_BORDER}`, marginTop: '10px' }}>
+              <div>
+                <p style={{ fontSize: '14px', fontWeight: '700', color: INK, margin: '0 0 2px' }}>Destination suggestions</p>
+                <p style={{ fontSize: '12px', color: MUTED, margin: 0 }}>Includes Group Destination Decision Mode</p>
+              </div>
+              <div style={{ display: 'flex', borderRadius: '999px', overflow: 'hidden', border: `1.5px solid ${GRADIENT}`, flexShrink: 0 }}>
+                <button onClick={() => !aiToggleOn('destination_suggestions') && toggleAiFeature('destination_suggestions')} style={{ padding: '6px 14px', fontSize: '12px', fontWeight: '800', border: 'none', cursor: 'pointer', fontFamily: FONT, background: aiToggleOn('destination_suggestions') ? GRADIENT : 'white', color: aiToggleOn('destination_suggestions') ? BG : MUTED }}>On</button>
+                <button onClick={() => aiToggleOn('destination_suggestions') && toggleAiFeature('destination_suggestions')} style={{ padding: '6px 14px', fontSize: '12px', fontWeight: '800', border: 'none', cursor: 'pointer', fontFamily: FONT, background: !aiToggleOn('destination_suggestions') ? GRADIENT : 'white', color: !aiToggleOn('destination_suggestions') ? BG : MUTED }}>Off</button>
+              </div>
+            </div>
+            <p style={{ fontSize: '11px', color: MUTED, margin: '12px 0 0', fontStyle: 'italic' }}>More features appear here as they roll out.</p>
+          </div>
+
+          <div style={cardStyle}>
+            <p style={cardTitleStyle}>Reset my recommendations</p>
+            <p style={{ fontSize: '12px', color: MUTED, margin: '0 0 14px', lineHeight: 1.5 }}>Clears what we've learned — structured signals, this-or-that answers, and your summary above. Your trips, itineraries, and expenses are never touched.</p>
+            <button onClick={resetRecommendations} style={destructiveBtnStyle}>Reset my recommendations</button>
+          </div>
+
+          <div style={cardStyle}>
+            <p style={cardTitleStyle}>Sign out</p>
+            <button onClick={signOut} style={destructiveBtnStyle}>Sign out</button>
+          </div>
+        </div>
+        {renderModal()}
+      </div>
+    )
+  }
+
+  function renderDecisionScreen() {
+    const trip = selectedTrip
+    const isOrganizer = trip.created_by === user.id
+    const destinationItems = items.filter(i => i.type === 'destination' && !dismissedSuggestionIds[i.id])
+    const respondedCount = decisionProgress?.responded_count ?? (myDecisionSurvey ? 1 : 0)
+    const totalMembers = decisionProgress?.total_members ?? members.length
+
+    return (
+      <div style={{ minHeight: '100vh', background: BG, fontFamily: FONT, paddingBottom: '40px' }}>
+        <div style={{ background: BG_GRADIENT, padding: 'max(28px, calc(20px + env(safe-area-inset-top))) 24px 26px' }}>
+          <button onClick={() => { setSelectedTrip(null); setActiveTab('master') }} style={{ background: 'none', border: 'none', color: 'rgba(214,210,200,0.85)', fontSize: '14px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontFamily: FONT, marginBottom: '16px' }}>
+            <ArrowLeft size={16} /> Back
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+            <Globe size={18} color="rgba(214,210,200,0.8)" />
+            <span style={{ fontSize: '12px', color: 'rgba(214,210,200,0.8)', fontWeight: '600' }}>Deciding as a group</span>
+          </div>
+          <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: '22px', fontWeight: '600', color: BG, margin: '0 0 6px' }}>{trip.name}</h1>
+          <p style={{ fontSize: '12px', color: 'rgba(214,210,200,0.85)', margin: 0 }}>{respondedCount} of {totalMembers} crew member{totalMembers === 1 ? '' : 's'} answered</p>
+        </div>
+
+        <div style={{ padding: '20px' }}>
+          {myDecisionSurvey === undefined ? (
+            <p style={{ textAlign: 'center', color: MUTED, fontSize: '13px' }}>Loading…</p>
+          ) : myDecisionSurvey === null ? (
+            <div style={{ background: 'white', borderRadius: '18px', padding: '20px', textAlign: 'center' }}>
+              <p style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: '0 0 8px' }}>Add your answers</p>
+              <p style={{ fontSize: '13px', color: MUTED, margin: '0 0 16px', lineHeight: 1.5 }}>Everyone submits their own survey and quick-fire round — suggestions blend everyone's input into a shortlist to vote on.</p>
+              <button onClick={() => { resetSurveyForm(); setPostTripFlow({ step: 'survey', trip }) }} style={{ width: '100%', padding: '14px', border: 'none', borderRadius: '16px', background: ACCENT, color: BG, fontSize: '15px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>
+                Answer the survey
+              </button>
+            </div>
+          ) : destinationItems.length === 0 ? (
+            <div style={{ background: 'white', borderRadius: '18px', padding: '20px', textAlign: 'center' }}>
+              <CheckCircle2 size={22} color={TEAL} style={{ marginBottom: '10px' }} />
+              <p style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: '0 0 8px' }}>You're in</p>
+              <p style={{ fontSize: '13px', color: MUTED, margin: '0 0 16px', lineHeight: 1.5 }}>
+                {isOrganizer ? 'Generate a shortlist once enough of the group has answered, or wait for more responses first.' : 'Waiting on the organizer to generate suggestions once enough of the group has answered.'}
+              </p>
+              {isOrganizer && (
+                <button onClick={generateDecisionSuggestions} disabled={decisionSuggestionsLoading} style={{ width: '100%', padding: '14px', border: 'none', borderRadius: '16px', background: ACCENT, color: BG, fontSize: '15px', fontWeight: '700', cursor: decisionSuggestionsLoading ? 'default' : 'pointer', opacity: decisionSuggestionsLoading ? 0.6 : 1, fontFamily: FONT }}>
+                  {decisionSuggestionsLoading ? 'Generating…' : 'Generate suggestions'}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                <p style={{ fontSize: '12px', color: MUTED, margin: 0 }}>Not feeling these?</p>
+                <button onClick={refreshDecisionSuggestions} disabled={decisionSuggestionsLoading} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', cursor: decisionSuggestionsLoading ? 'default' : 'pointer', padding: 0, fontFamily: FONT }}>
+                  <RefreshCw size={14} color={ACCENT} />
+                  <span style={{ fontSize: '12px', fontWeight: '700', color: ACCENT }}>{decisionSuggestionsLoading ? 'Refreshing…' : 'Refresh suggestions'}</span>
+                </button>
+              </div>
+
+              {destinationItems.map(item => {
+                const color = TYPE_CONFIG.destination.color
+                const voted = hasVoted(item.id)
+                return (
+                  <div key={item.id} style={{ background: 'white', borderRadius: '18px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)', padding: '14px', marginBottom: '12px', borderLeft: `3px dashed ${color}`, display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                    <div style={{ width: '34px', height: '34px', borderRadius: '10px', background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <MapPin size={18} color={color} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontSize: '15px', fontWeight: '800', color: INK, margin: '0 0 4px' }}>{item.title}</p>
+                      {item.notes && <p style={{ fontSize: '12px', color: MUTED, margin: '0 0 8px', lineHeight: 1.5 }}>{item.notes}</p>}
+                      {item.ai_reasoning && (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', marginBottom: '10px' }}>
+                          <Lightbulb size={13} color={MUTED} style={{ flexShrink: 0, marginTop: '2px' }} />
+                          <p style={{ fontSize: '11.5px', color: MUTED, margin: 0, fontStyle: 'italic', lineHeight: 1.5 }}>{item.ai_reasoning}</p>
+                        </div>
+                      )}
+                      {item.ai_source && (
+                        <span style={{ fontSize: '10px', fontWeight: '700', color: TEAL, background: 'rgba(63,115,114,0.12)', padding: '3px 8px', borderRadius: '999px' }}>
+                          {item.ai_source === 'both' ? 'Survey + taste profile' : item.ai_source === 'taste_profile' ? 'Taste profile' : "This trip's answers"}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                      <button onClick={() => voteForDestination(item)} style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px',
+                        width: '38px', height: '44px', borderRadius: '12px', flexShrink: 0, cursor: 'pointer', border: voted ? 'none' : `1.5px solid ${CARD_BORDER}`,
+                        background: voted ? ACCENT : 'rgba(255,255,255,0.6)'
+                      }}>
+                        <ChevronUp size={13} color={voted ? BG : MUTED} strokeWidth={2.6} />
+                        <span style={{ fontSize: '12px', fontWeight: '800', color: voted ? BG : MUTED }}>{getVoteCount(item.id)}</span>
+                      </button>
+                      <button onClick={() => markSuggestionNotForMe(item)} title="Not for me" style={{
+                        width: '22px', height: '22px', borderRadius: '50%', border: `1.5px solid ${CARD_BORDER}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: 'none'
+                      }}>
+                        <X size={10} color={MUTED} strokeWidth={2.4} />
+                      </button>
+                      {isOrganizer && (
+                        <button onClick={() => finalizeDecision(item)} title="Finalize this one" style={{ fontSize: '10px', color: ACCENT, fontWeight: '700', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', fontFamily: FONT }}>Pick</button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+
+              {isOrganizer && (
+                <>
+                  <button onClick={() => {
+                    const winner = [...destinationItems].sort((a, b) => getVoteCount(b.id) - getVoteCount(a.id))[0]
+                    if (winner) finalizeDecision(winner)
+                  }} style={{ width: '100%', padding: '15px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '16px', background: 'white', color: ACCENT_TEXT, fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT, marginTop: '4px' }}>
+                    Finalize top choice
+                  </button>
+                  <p style={{ textAlign: 'center', fontSize: '11px', color: MUTED, margin: '10px 0 0' }}>Or tap "Pick" on any option above to finalize that one instead</p>
+                </>
+              )}
+            </>
+          )}
+        </div>
+        {renderModal()}
+      </div>
+    )
+  }
+
   if (!user) {
     return (
       <div style={{ minHeight: '100vh', background: BG_GRADIENT, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT, padding: '24px' }}>
@@ -2464,6 +3226,18 @@ function App() {
         </div>
       </div>
     )
+  }
+
+  if (postTripFlow) {
+    return postTripFlow.step === 'survey' ? renderSurveyScreen() : renderThisOrThatScreen()
+  }
+
+  if (view === 'account') {
+    return renderAccountScreen()
+  }
+
+  if (selectedTrip?.status === 'deciding') {
+    return renderDecisionScreen()
   }
 
   if (selectedTrip) {
@@ -3417,6 +4191,9 @@ function App() {
             <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(214,210,200,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: BG, fontWeight: '700', fontSize: '15px' }}>
               {getInitial(user)}
             </div>
+            <button onClick={() => setView('account')} title="Account" style={{ width: '36px', height: '36px', borderRadius: '50%', border: '1px solid rgba(214,210,200,0.35)', background: 'rgba(214,210,200,0.18)', color: BG, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Settings size={17} />
+            </button>
             <button onClick={signOut} style={{ padding: '8px 16px', border: '1px solid rgba(214,210,200,0.35)', borderRadius: '999px', background: 'rgba(214,210,200,0.18)', color: BG, fontSize: '13px', cursor: 'pointer', fontWeight: '600', fontFamily: FONT }}>Sign out</button>
           </div>
         </div>
@@ -3491,7 +4268,11 @@ function App() {
             <div key={trip.id} style={{ position: 'relative', marginBottom: '12px' }}>
               <div onClick={() => setSelectedTrip(trip)} style={{ background: getBannerStyle(trip.banner_style), borderRadius: '24px', padding: '28px 24px', boxShadow: '0 8px 24px rgba(43,52,64,0.3)', textAlign: 'center', cursor: 'pointer' }}>
                 <p style={{ fontFamily: FONT_DISPLAY, fontWeight: '600', fontSize: '24px', color: BG, margin: '0 0 6px', padding: '0 22px' }}>{trip.name}</p>
-                {trip.destination && <p style={{ color: 'rgba(214,210,200,0.9)', fontSize: '14px', margin: '0 0 6px' }}>📍 {trip.destination}</p>}
+                {trip.status === 'deciding' ? (
+                  <p style={{ color: 'rgba(214,210,200,0.9)', fontSize: '14px', margin: '0 0 6px' }}>🌍 Deciding as a group</p>
+                ) : trip.destination && (
+                  <p style={{ color: 'rgba(214,210,200,0.9)', fontSize: '14px', margin: '0 0 6px' }}>📍 {trip.destination}</p>
+                )}
                 {trip.start_date && (
                   <p style={{ color: 'rgba(214,210,200,0.7)', fontSize: '13px', margin: 0 }}>
                     {new Date(trip.start_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
