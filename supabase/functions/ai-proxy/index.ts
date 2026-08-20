@@ -256,8 +256,12 @@ Deno.serve(async (req) => {
     const body = await req.json()
     const { action } = body
 
-    const openaiKey = Deno.env.get('OPENAI_API_KEY')
-    if (!openaiKey) throw new Error('OPENAI_API_KEY is not configured.')
+    // Secret name matches what's actually set on this project
+    // (OpenAI_GPT_Luna_5.6), not the OPENAI_API_KEY convention used
+    // elsewhere (ANTHROPIC_API_KEY, SUPABASE_SERVICE_ROLE_KEY) — kept
+    // as-is per Aditi rather than re-setting the secret.
+    const openaiKey = Deno.env.get('OpenAI_GPT_Luna_5.6')
+    if (!openaiKey) throw new Error('OpenAI_GPT_Luna_5.6 secret is not configured.')
 
     const authed = createClient(
       Deno.env.get('SUPABASE_URL'),
