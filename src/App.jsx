@@ -579,12 +579,20 @@ function App() {
   // App Store reviewers (who can't complete a live Google OAuth handshake)
   // have a reliable demo login. Doesn't touch signInWithGoogle, the native
   // OAuth callback listener, or providerToken/calendar sync at all.
-  const [authMode, setAuthMode] = useState('google') // 'google' | 'signin' | 'signup'
+  const [authMode, setAuthMode] = useState('google') // 'google' | 'signin' | 'signup' | 'reset'
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [authName, setAuthName] = useState('')
   const [authError, setAuthError] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
+  const [resetSent, setResetSent] = useState(false)
+  // Set true when Supabase's PASSWORD_RECOVERY auth event fires (the
+  // user clicked the reset-password email link) — gates a "choose a new
+  // password" screen ahead of the rest of the app, since that link
+  // signs them in with a temporary recovery session.
+  const [passwordRecovery, setPasswordRecovery] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('')
 
   const [items, setItems] = useState([])
   const [editingItem, setEditingItem] = useState(null)
@@ -774,14 +782,43 @@ function App() {
     setAuthError('Check your email to confirm your account, then sign in.')
   }
 
+  async function sendPasswordReset() {
+    setAuthError('')
+    if (!authEmail) { setAuthError('Enter your email first.'); return }
+    setAuthLoading(true)
+    const { error } = await supabase.auth.resetPasswordForEmail(authEmail, { redirectTo: window.location.origin })
+    setAuthLoading(false)
+    if (error) { setAuthError(error.message); return }
+    setResetSent(true)
+  }
+
+  async function updatePassword() {
+    setAuthError('')
+    if (!newPassword || newPassword.length < 6) { setAuthError('Password must be at least 6 characters.'); return }
+    if (newPassword !== newPasswordConfirm) { setAuthError('Passwords don’t match.'); return }
+    setAuthLoading(true)
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    setAuthLoading(false)
+    if (error) { setAuthError(error.message); return }
+    haptic('success')
+    setPasswordRecovery(false)
+    setNewPassword(''); setNewPasswordConfirm(''); setAuthError('')
+  }
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
       const token = session?.provider_token || sessionStorage.getItem('gcal_provider_token')
       setProviderToken(token || null)
     })
-    supabase.auth.onAuthStateChange((_e, session) => {
+    supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null)
+      // Fires when the user lands back in the app via the reset-password
+      // email link — Supabase signs them into a temporary recovery
+      // session, which the render cascade below gates behind a
+      // "choose a new password" screen rather than dropping them
+      // straight into the app on someone else's still-open link.
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
       if (session?.provider_token) {
         sessionStorage.setItem('gcal_provider_token', session.provider_token)
         setProviderToken(session.provider_token)
@@ -3202,6 +3239,28 @@ function App() {
             }}>
               Sign in with email
             </button>
+          ) : authMode === 'reset' ? (
+            <div style={{ textAlign: 'left' }}>
+              {resetSent ? (
+                <p style={{ fontSize: '14px', color: MUTED, margin: '0 0 14px', lineHeight: 1.5 }}>
+                  If an account exists for <strong style={{ color: INK }}>{authEmail}</strong>, a reset link is on its way. Follow it to choose a new password.
+                </p>
+              ) : (
+                <>
+                  <input placeholder="Email" type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)}
+                    style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
+                  {authError && <p style={{ fontSize: '13px', color: '#A32D2D', margin: '0 0 10px' }}>{authError}</p>}
+                  <button onClick={sendPasswordReset} disabled={authLoading}
+                    style={{ width: '100%', padding: '13px', border: 'none', borderRadius: '14px', background: ACCENT, color: BG, fontSize: '14px', fontWeight: '700', cursor: authLoading ? 'default' : 'pointer', opacity: authLoading ? 0.6 : 1, fontFamily: FONT, marginBottom: '10px' }}>
+                    {authLoading ? 'Sending…' : 'Send reset link'}
+                  </button>
+                </>
+              )}
+              <button onClick={() => { setAuthMode('signin'); setAuthError(''); setResetSent(false) }}
+                style={{ width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: '13px', cursor: 'pointer', fontFamily: FONT, padding: '4px' }}>
+                Back to sign in
+              </button>
+            </div>
           ) : (
             <div style={{ textAlign: 'left' }}>
               {authMode === 'signup' && (
@@ -3212,6 +3271,12 @@ function App() {
                 style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
               <input placeholder="Password" type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
                 style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
+              {authMode === 'signin' && (
+                <button onClick={() => { setAuthMode('reset'); setAuthError(''); setResetSent(false) }}
+                  style={{ display: 'block', background: 'none', border: 'none', color: MUTED, fontSize: '12px', cursor: 'pointer', fontFamily: FONT, padding: '4px 0', marginBottom: '6px', textDecoration: 'underline' }}>
+                  Forgot password?
+                </button>
+              )}
               {authError && <p style={{ fontSize: '13px', color: '#A32D2D', margin: '0 0 10px' }}>{authError}</p>}
               <button onClick={authMode === 'signin' ? signInWithEmail : signUpWithEmail} disabled={authLoading}
                 style={{ width: '100%', padding: '13px', border: 'none', borderRadius: '14px', background: ACCENT, color: BG, fontSize: '14px', fontWeight: '700', cursor: authLoading ? 'default' : 'pointer', opacity: authLoading ? 0.6 : 1, fontFamily: FONT, marginBottom: '10px' }}>
@@ -3223,6 +3288,26 @@ function App() {
               </button>
             </div>
           )}
+        </div>
+      </div>
+    )
+  }
+
+  if (passwordRecovery) {
+    return (
+      <div style={{ minHeight: '100vh', background: BG_GRADIENT, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT, padding: '24px' }}>
+        <div style={{ background: 'white', borderRadius: '28px', padding: '40px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(18,18,18,0.2)' }}>
+          <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: '24px', fontWeight: '600', color: INK, margin: '0 0 8px' }}>Choose a new password</h1>
+          <p style={{ color: MUTED, fontSize: '14px', margin: '0 0 24px', lineHeight: 1.5 }}>You're signed in via your reset link — pick a new password to finish.</p>
+          <input placeholder="New password" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+            style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
+          <input placeholder="Confirm new password" type="password" value={newPasswordConfirm} onChange={e => setNewPasswordConfirm(e.target.value)}
+            style={{ width: '100%', padding: '12px 16px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', fontSize: '15px', boxSizing: 'border-box', outline: 'none', marginBottom: '10px', fontFamily: FONT }} />
+          {authError && <p style={{ fontSize: '13px', color: '#A32D2D', margin: '0 0 10px' }}>{authError}</p>}
+          <button onClick={updatePassword} disabled={authLoading}
+            style={{ width: '100%', padding: '13px', border: 'none', borderRadius: '14px', background: ACCENT, color: BG, fontSize: '14px', fontWeight: '700', cursor: authLoading ? 'default' : 'pointer', opacity: authLoading ? 0.6 : 1, fontFamily: FONT }}>
+            {authLoading ? 'Saving…' : 'Save new password'}
+          </button>
         </div>
       </div>
     )
