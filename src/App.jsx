@@ -11,7 +11,7 @@ import {
   Smile, HandCoins, PartyPopper, PlaneTakeoff, Settings, LogOut, HelpCircle, Share2, Luggage, Trash2, Star
 } from 'lucide-react'
 
-// ---------- Palette: astrictly the 12 named colors — Limestone, Mulberry, Copper Clay, ----------
+// ---------- Palette: strictly the 12 named colors — Limestone, Mulberry, Copper Clay, ----------
 // Deep Moss, Night Tide, Void Black, Antique Ochre, Weathered Sage, Harbor
 // Teal, Storm Blue, Smoky Violet, Faded Rose. Every "light tint" below is an
 // alpha (transparency) version of one of these twelve hexes — never a new,
@@ -2369,7 +2369,7 @@ function App() {
               <p style={{ fontSize: '13px', color: item.traveler_user_id ? memberColorHex(members.find(m => m.user_id === item.traveler_user_id)?.color_hex) : ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
             )}
             {item.notes && (
-              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5 }}>{item.notes}</p>
+              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{item.notes}</p>
             )}
             {showCost && (
               <p style={{ fontSize: '12px', color: mutedTextColor, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -2406,7 +2406,7 @@ function App() {
           {!isLastNode && <div style={{ width: '2px', flex: 1, background: CARD_BORDER, marginTop: '4px', minHeight: '20px' }} />}
         </div>
         <div {...longPressHandlers} style={{
-          flex: 1, background: isSuggested ? `${borderColor}26` : borderColor, borderRadius: '18px', padding: '14px 16px', marginBottom: '16px',
+          flex: 1, minWidth: 0, background: isSuggested ? `${borderColor}26` : borderColor, borderRadius: '18px', padding: '14px 16px', marginBottom: '16px',
           boxShadow: isSuggested ? 'none' : '0 1px 3px rgba(18,18,18,0.12)',
           border: isSuggested ? `1.5px dashed ${borderColor}80` : '1.5px solid transparent',
           borderLeft: isSuggested ? `1.5px dashed ${borderColor}80` : '1.5px solid transparent',
@@ -2464,7 +2464,7 @@ function App() {
               <p style={{ fontSize: '13px', color: item.traveler_user_id ? memberColorHex(members.find(m => m.user_id === item.traveler_user_id)?.color_hex) : ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
             )}
             {item.notes && (
-              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5 }}>{item.notes}</p>
+              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{item.notes}</p>
             )}
             {showCost && (
               <p style={{ fontSize: '12px', color: cardMutedColor, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -3151,6 +3151,13 @@ function App() {
                   ))}
                 </select>
               </div>
+
+              {undatedItems.length > 0 && (
+                <div style={{ marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '11px', fontWeight: '700', color: MUTED, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 14px', textAlign: 'center' }}>💡 Ideas without a date yet</h3>
+                  {undatedItems.map(item => renderCard(item, item.id, true))}
+                </div>
+              )}
 
               {itineraryDates.length === 0 && undatedItems.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '48px 24px', color: MUTED, fontSize: '14px', background: 'white', borderRadius: '24px' }}>
