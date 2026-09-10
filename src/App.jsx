@@ -11,7 +11,7 @@ import {
   Smile, HandCoins, PartyPopper, PlaneTakeoff, Settings, LogOut, HelpCircle, Share2, Luggage, Trash2, Star
 } from 'lucide-react'
 
-// ---------- Palette: strictly the 12 named colors — Limestone, Mulberry, Copper Clay, ----------
+// ---------- Palette: astrictly the 12 named colors — Limestone, Mulberry, Copper Clay, ----------
 // Deep Moss, Night Tide, Void Black, Antique Ochre, Weathered Sage, Harbor
 // Teal, Storm Blue, Smoky Violet, Faded Rose. Every "light tint" below is an
 // alpha (transparency) version of one of these twelve hexes — never a new,
@@ -226,6 +226,16 @@ function classifyTrip(trip, today = new Date()) {
   if (todayMidnight < windowStart) return 'upcoming'
   if (todayMidnight > windowEnd) return 'past'
   return 'current'
+}
+
+// Short, easy-to-read invite codes — 6 characters from an alphabet that
+// drops visually ambiguous characters (0/O, 1/I/L) so it's easy to read
+// off a screen or type by hand, unlike the old long random-string tokens.
+const INVITE_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+function generateShortInviteCode() {
+  let code = ''
+  for (let i = 0; i < 6; i++) code += INVITE_CODE_CHARS[Math.floor(Math.random() * INVITE_CODE_CHARS.length)]
+  return code
 }
 
 function mapsLink(address) {
@@ -1916,12 +1926,19 @@ function App() {
     }
   }
 
-  // Trip-specific invite: creates a one-time token tied to THIS trip's id
-  // and, once redeemed via handleInviteToken(), adds the recipient straight
-  // into trip_members for just that trip — they never see any other trip.
+  // Trip-specific invite: creates a short human-readable code tied to THIS
+  // trip's id and, once redeemed, adds the recipient straight into
+  // trip_members for just that trip — they never see any other trip.
   async function generateInviteLink(tripId) {
     try {
-      const token = Math.random().toString(36).substring(2) + Date.now().toString(36)
+      let token = generateShortInviteCode()
+      // Vanishingly unlikely to collide (32^6 possibilities), but cheap to
+      // guard against reusing a still-live code.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { data: existing } = await supabase.from('invites').select('id').eq('token', token).maybeSingle()
+        if (!existing) break
+        token = generateShortInviteCode()
+      }
       const { error: insertError } = await supabase.from('invites').insert({ trip_id: tripId, token, created_by: user.id })
       if (insertError) {
         console.error('Failed to create invite:', insertError)
@@ -1931,25 +1948,21 @@ function App() {
       const webLink = `${WEB_APP_URL}?invite=${token}`
       const tripForMessage = selectedTrip && selectedTrip.id === tripId ? selectedTrip : trips.find(t => t.id === tripId)
       const tripLabel = tripForMessage?.name ? ` for "${tripForMessage.name}"` : ''
-      const message = `You're invited to a trip${tripLabel} on Trippy!\n\nEasiest way in: open the web link below and sign in there — it'll add you to the trip automatically.\n\nIf you'd rather use the iPhone app: install it via the TestFlight link first, sign in, then on the home screen tap "Have an invite link?" and paste this whole message (or just the web link) to join the trip.\n\nThe app is in beta, so the first screen you'll see when signing in with your Google Account will say Google hasn't verified this app — that's expected, here's exactly what to do:\n1. Click "Advanced"\n2. Click "Go to biluxvnrawqfsyixhffr.supabase.co (unsafe)"\n3. Click "Continue"\n4. Click "Continue" again\n\niOS app: ${IOS_APP_LINK}\nWeb app: ${webLink}`
 
-      if (navigator.share) {
-        try {
-          await navigator.share({ title: `Join "${tripForMessage?.name || 'a trip'}" on Trippy`, text: message })
-          return
-        } catch (shareErr) {
-          if (shareErr?.name === 'AbortError') return // person closed the share sheet — not an error
-          console.error('Share failed, falling back to clipboard:', shareErr)
-        }
-      }
+      let copied = false
       try {
-        await navigator.clipboard.writeText(message)
-        setCopiedId(tripId)
-        setTimeout(() => setCopiedId(null), 3000)
+        await navigator.clipboard.writeText(token)
+        copied = true
       } catch (clipErr) {
         console.error('Clipboard write failed:', clipErr)
-        showInfo({ title: 'Copy this invite manually', message })
       }
+
+      showInfo({
+        title: `Invite code${tripLabel}`,
+        message: `${token}\n\n${copied ? 'Copied to your clipboard — ' : ''}text or read this code to whoever you're inviting. Once they're signed in, they enter it under "Have an invite link?" on the Trippy home screen.\n\nThey can also just tap this link directly: ${webLink}`
+      })
+      setCopiedId(tripId)
+      setTimeout(() => setCopiedId(null), 3000)
     } catch (err) {
       console.error('Unexpected error generating invite:', err)
       showInfo({ title: 'Something went wrong', message: err?.message || 'Please try again.' })
