@@ -238,6 +238,32 @@ function generateShortInviteCode() {
   return code
 }
 
+// Turns any http(s) URL sitting inside a plain-text string (like notes
+// someone pasted a booking link into) into an actual clickable link,
+// without needing a dedicated field for it. Splits on the URL pattern and
+// re-assembles the pieces, so surrounding text stays intact — but shows a
+// short "Link" label instead of the raw URL, since a full booking-site URL
+// is long and not meant to be read, just tapped.
+const URL_PATTERN = /(https?:\/\/[^\s]+)/g
+function linkifyText(text, keyPrefix) {
+  if (!text) return text
+  const parts = text.split(URL_PATTERN)
+  const totalLinks = parts.filter(p => p.match(URL_PATTERN)).length
+  let linkIndex = 0
+  return parts.map((part, i) => {
+    if (part.match(URL_PATTERN)) {
+      linkIndex++
+      const label = totalLinks > 1 ? `Link ${linkIndex}` : 'Link'
+      return (
+        <a key={`${keyPrefix}-link-${i}`} href={part} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ color: 'inherit', textDecoration: 'underline', fontWeight: '700' }}>
+          {label}
+        </a>
+      )
+    }
+    return part
+  })
+}
+
 function mapsLink(address) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`
 }
@@ -610,6 +636,7 @@ function App() {
   const [newItemTimezone, setNewItemTimezone] = useState('')
   const [showItemTimezoneField, setShowItemTimezoneField] = useState(false)
   const [newNotes, setNewNotes] = useState('')
+  const [newLink, setNewLink] = useState('')
   const [newTravelerUserId, setNewTravelerUserId] = useState('')
   const [newTravelerName, setNewTravelerName] = useState('')
   const [newIsPrivate, setNewIsPrivate] = useState(false)
@@ -1307,7 +1334,7 @@ function App() {
     setNewTitle(''); setNewType('activity'); setNewStatus('suggested')
     setNewDate(''); setNewStartTime(''); setNewEndTime('')
     setNewCheckIn(''); setNewCheckOut(''); setNewDeparture(''); setNewArrival('')
-    setNewConfirmation(''); setNewAddress(''); setNewItemTimezone(''); setShowItemTimezoneField(false); setNewNotes('')
+    setNewConfirmation(''); setNewAddress(''); setNewItemTimezone(''); setShowItemTimezoneField(false); setNewNotes(''); setNewLink('')
     setNewTravelerUserId(''); setNewTravelerName(''); setNewIsPrivate(false)
     setNewIsPrepaid(false); setNewCost(''); setNewCostCurrency('USD'); setNewPaidBy(user.id)
     setNewSplitType('all'); setNewSplitMethod('even')
@@ -1323,7 +1350,7 @@ function App() {
     setNewCheckOut(item.check_out ? item.check_out.slice(0, 16) : '')
     setNewDeparture(item.departure_location || ''); setNewArrival(item.arrival_location || '')
     setNewConfirmation(item.confirmation || '')
-    setNewAddress(item.address || ''); setNewItemTimezone(item.item_timezone || ''); setNewNotes(item.notes || '')
+    setNewAddress(item.address || ''); setNewItemTimezone(item.item_timezone || ''); setNewNotes(item.notes || ''); setNewLink(item.link_url || '')
     setNewTravelerUserId(item.traveler_user_id || ''); setNewTravelerName(item.traveler_name || '')
     setNewIsPrivate(item.is_private || false)
     setNewIsPrepaid(item.is_prepaid || false); setNewCost(item.cost || ''); setNewCostCurrency(item.cost_currency || 'USD')
@@ -1467,7 +1494,7 @@ function App() {
       departure_location: timing === 'flight' ? (newDeparture || null) : null,
       arrival_location: timing === 'flight' ? (newArrival || null) : null,
       confirmation: TYPE_CONFIG[newType]?.confirmation ? (newConfirmation || null) : null,
-      address: newAddress || null, item_timezone: newItemTimezone || null, notes: newNotes || null,
+      address: newAddress || null, item_timezone: newItemTimezone || null, notes: newNotes || null, link_url: newLink || null,
       traveler_user_id: newTravelerUserId || null, traveler_name: newTravelerName || null,
       is_private: newIsPrivate,
       is_prepaid: newIsPrepaid, cost: newIsPrepaid ? cost : null, cost_currency: newIsPrepaid ? newCostCurrency : null,
@@ -2369,7 +2396,12 @@ function App() {
               <p style={{ fontSize: '13px', color: item.traveler_user_id ? memberColorHex(members.find(m => m.user_id === item.traveler_user_id)?.color_hex) : ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
             )}
             {item.notes && (
-              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{item.notes}</p>
+              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{linkifyText(item.notes, `${key}-notes`)}</p>
+            )}
+            {item.link_url && (
+              <a href={item.link_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: '13px', color: ACCENT_TEXT, margin: '8px 0 0', display: 'inline-flex', alignItems: 'center', gap: '5px', textDecoration: 'underline' }}>
+                <Link2 size={13} /> Open link
+              </a>
             )}
             {showCost && (
               <p style={{ fontSize: '12px', color: mutedTextColor, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -2464,7 +2496,12 @@ function App() {
               <p style={{ fontSize: '13px', color: item.traveler_user_id ? memberColorHex(members.find(m => m.user_id === item.traveler_user_id)?.color_hex) : ACCENT_TEXT, margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={13} /> {item.traveler_name || getMemberName(item.traveler_user_id)}</p>
             )}
             {item.notes && (
-              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{item.notes}</p>
+              <p style={{ fontSize: '13px', color: INK, margin: '8px 0 0', background: 'rgba(214,210,200,0.4)', padding: '8px 12px', borderRadius: '10px', lineHeight: 1.5, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{linkifyText(item.notes, `${key}-notes`)}</p>
+            )}
+            {item.link_url && (
+              <a href={item.link_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: '13px', color: isSuggested ? ACCENT_TEXT : cardTextColor, margin: '8px 0 0', display: 'inline-flex', alignItems: 'center', gap: '5px', textDecoration: 'underline' }}>
+                <Link2 size={13} /> Open link
+              </a>
             )}
             {showCost && (
               <p style={{ fontSize: '12px', color: cardMutedColor, margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -3093,6 +3130,8 @@ function App() {
                 )}
 
                 <textarea placeholder="📝 Notes (optional)" value={newNotes} onChange={e => setNewNotes(e.target.value)} style={{ ...inputStyle, marginBottom: '12px', minHeight: '70px', resize: 'vertical' }} />
+
+                <input placeholder="🔗 Link (optional) — booking confirmation, listing, etc." value={newLink} onChange={e => setNewLink(e.target.value)} style={{ ...inputStyle, marginBottom: '12px' }} />
 
                 {TYPE_CONFIG[newType]?.confirmation && (
                   <div style={sectionBox}>
