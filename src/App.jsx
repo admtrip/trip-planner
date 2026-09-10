@@ -667,10 +667,25 @@ function App() {
   // browser rather than the app's own web view. This listens for the app
   // being reopened via the com.aditi.trippy://callback custom URL scheme
   // once that sign-in completes, and turns the tokens in that URL into a
-  // real Supabase session.
+  // real Supabase session. It also catches Universal Link opens of the web
+  // invite URL (https://<domain>?invite=...) — that only fires if the app
+  // is ALREADY installed and Associated Domains is configured in Xcode
+  // pointing at the same domain; a fresh TestFlight install never sees
+  // this listener at all, which is what the manual invite-code paste
+  // fallback below exists for.
+  const [pendingInviteToken, setPendingInviteToken] = useState(null)
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return
     const listener = CapacitorApp.addListener('appUrlOpen', async ({ url }) => {
+      if (url.includes('invite=')) {
+        let token = null
+        try { token = new URL(url).searchParams.get('invite') } catch {}
+        if (token) {
+          if (user) await redeemInvite(token)
+          else setPendingInviteToken(token)
+        }
+        return
+      }
       if (!url.includes('callback')) return
       await Browser.close().catch(() => {})
       const hashPart = url.split('#')[1]
@@ -692,7 +707,16 @@ function App() {
       }
     })
     return () => { listener.then(l => l.remove()) }
-  }, [])
+  }, [user])
+
+  // Once sign-in completes, redeem whatever Universal Link invite arrived
+  // before the session was ready.
+  useEffect(() => {
+    if (user && pendingInviteToken) {
+      redeemInvite(pendingInviteToken)
+      setPendingInviteToken(null)
+    }
+  }, [user, pendingInviteToken])
 
   async function signInWithGoogle() {
     const redirectTo = Capacitor.isNativePlatform() ? 'com.aditi.trippy://callback' : window.location.origin
@@ -837,9 +861,12 @@ function App() {
     return converted != null ? converted.toFixed(2) : null
   }
 
-  async function handleInviteToken() {
-    const params = new URLSearchParams(window.location.search)
-    const token = params.get('invite')
+  // Actually redeems an invite token against Supabase — shared by all three
+  // entry points: a ?invite= query param on web, a Universal Link opening
+  // the native app directly, and the manual "Have an invite link?" paste
+  // fallback for people who installed via TestFlight without ever visiting
+  // the web link first.
+  async function redeemInvite(token) {
     if (!token) return
     const { data: invite, error } = await supabase.from('invites').select('*').eq('token', token).single()
     if (error || !invite) { setJoinMessage('Invalid or expired invite link.'); return }
@@ -850,8 +877,48 @@ function App() {
     } else {
       setJoinMessage("You're already part of this trip.")
     }
-    window.history.replaceState({}, '', '/')
     fetchTrips()
+  }
+
+  // Web entry point: reads ?invite= straight off the URL. Only fires on web
+  // (or if a Universal Link somehow lands as a query param instead of being
+  // caught by the native listener below).
+  async function handleInviteToken() {
+    const params = new URLSearchParams(window.location.search)
+    const token = params.get('invite')
+    if (!token) return
+    await redeemInvite(token)
+    window.history.replaceState({}, '', '/')
+  }
+
+  // Manual fallback for a fresh TestFlight install: iOS has no way to carry
+  // an invite token through the App Store install process itself (that
+  // needs a deferred-deep-linking service like Branch, which this app
+  // doesn't use), so someone who installs via the plain TestFlight link
+  // never had a chance to redeem their invite automatically. This lets them
+  // paste the invite link (or just the raw token) after signing in.
+  const [inviteCodeInput, setInviteCodeInput] = useState('')
+  const [showInviteCodeField, setShowInviteCodeField] = useState(false)
+  async function redeemPastedInvite() {
+    const raw = inviteCodeInput.trim()
+    if (!raw) return
+    // Accept a bare token, a bare URL, or the whole multi-line invite
+    // message someone might paste in — pull the first "invite=" value or
+    // web link out of it however it's formatted.
+    let token = null
+    const paramMatch = raw.match(/invite=([A-Za-z0-9]+)/)
+    if (paramMatch) {
+      token = paramMatch[1]
+    } else {
+      const urlMatch = raw.match(/https?:\/\/\S+/)
+      if (urlMatch) {
+        try { token = new URL(urlMatch[0]).searchParams.get('invite') } catch {}
+      }
+    }
+    if (!token) token = raw.split(/\s+/)[0] // fall back to treating it as a bare token
+    await redeemInvite(token)
+    setInviteCodeInput('')
+    setShowInviteCodeField(false)
   }
 
   async function fetchTrips() {
@@ -1864,7 +1931,7 @@ function App() {
       const webLink = `${WEB_APP_URL}?invite=${token}`
       const tripForMessage = selectedTrip && selectedTrip.id === tripId ? selectedTrip : trips.find(t => t.id === tripId)
       const tripLabel = tripForMessage?.name ? ` for "${tripForMessage.name}"` : ''
-      const message = `You're invited to a trip${tripLabel} on Trippy!\n\nThe app is in beta, so the first screen you'll see when signing in with your Google Account will say Google hasn't verified this app — that's expected, here's exactly what to do:\n1. Click "Advanced"\n2. Click "Go to biluxvnrawqfsyixhffr.supabase.co (unsafe)"\n3. Click "Continue"\n4. Click "Continue" again\n\niOS app: ${IOS_APP_LINK}\nWeb app: ${webLink}`
+      const message = `You're invited to a trip${tripLabel} on Trippy!\n\nEasiest way in: open the web link below and sign in there — it'll add you to the trip automatically.\n\nIf you'd rather use the iPhone app: install it via the TestFlight link first, sign in, then on the home screen tap "Have an invite link?" and paste this whole message (or just the web link) to join the trip.\n\nThe app is in beta, so the first screen you'll see when signing in with your Google Account will say Google hasn't verified this app — that's expected, here's exactly what to do:\n1. Click "Advanced"\n2. Click "Go to biluxvnrawqfsyixhffr.supabase.co (unsafe)"\n3. Click "Continue"\n4. Click "Continue" again\n\niOS app: ${IOS_APP_LINK}\nWeb app: ${webLink}`
 
       if (navigator.share) {
         try {
@@ -3605,10 +3672,35 @@ function App() {
         <button onClick={shareAppInvite} style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%', padding: '13px',
           border: `1.5px solid ${CARD_BORDER}`, borderRadius: '16px', background: 'white', color: ACCENT_TEXT,
-          fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT, marginBottom: '28px'
+          fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT, marginBottom: '10px'
         }}>
           <Share2 size={16} /> Invite a friend to Trippy
         </button>
+
+        {showInviteCodeField ? (
+          <div style={{ background: 'white', borderRadius: '16px', padding: '14px', marginBottom: '28px', boxShadow: '0 1px 3px rgba(18,18,18,0.05)' }}>
+            <label style={{ fontSize: '11px', color: MUTED, fontWeight: '600', display: 'block', marginBottom: '8px' }}>
+              Paste the invite link (or just the code) someone sent you
+            </label>
+            <textarea
+              placeholder="https://... or the code itself (pasting the whole invite message works too)"
+              value={inviteCodeInput}
+              onChange={e => setInviteCodeInput(e.target.value)}
+              style={{ ...inputStyle, marginBottom: '10px', minHeight: '70px', resize: 'vertical' }}
+            />
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button onClick={() => { setShowInviteCodeField(false); setInviteCodeInput('') }} style={{ flex: 1, padding: '12px', border: `1.5px solid ${CARD_BORDER}`, borderRadius: '14px', background: 'white', color: MUTED, fontSize: '13px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+              <button onClick={redeemPastedInvite} style={{ flex: 2, padding: '12px', border: 'none', borderRadius: '14px', background: ACCENT, color: BG, fontSize: '13px', fontWeight: '700', cursor: 'pointer', fontFamily: FONT }}>Join trip</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setShowInviteCodeField(true)} style={{
+            background: 'none', border: 'none', padding: '4px', cursor: 'pointer', fontSize: '13px', color: MUTED,
+            fontFamily: FONT, textDecoration: 'underline', marginBottom: '28px', display: 'block'
+          }}>
+            Have an invite link? Tap here
+          </button>
+        )}
 
         <h2 style={{ fontFamily: FONT_DISPLAY, fontSize: '20px', fontWeight: '600', color: INK, margin: '0 0 16px' }}>Your trips</h2>
         {trips.length === 0 ? (
