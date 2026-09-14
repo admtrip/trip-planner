@@ -558,7 +558,6 @@ function AddressInput({ value, onChange, onPlaceSelected, placeholder, style }) 
   const placesServiceRef = useRef(null)
   const sessionTokenRef = useRef(null)
   const debounceRef = useRef(null)
-  const selectingRef = useRef(false) // guards against blur hiding the list before a tap registers
 
   useEffect(() => {
     if (!apiKey) return
@@ -591,7 +590,6 @@ function AddressInput({ value, onChange, onPlaceSelected, placeholder, style }) 
   }
 
   function selectPrediction(prediction) {
-    selectingRef.current = false
     setShowDropdown(false)
     setPredictions([])
     onChange(prediction.structured_formatting?.main_text || prediction.description)
@@ -599,7 +597,10 @@ function AddressInput({ value, onChange, onPlaceSelected, placeholder, style }) 
     placesServiceRef.current.getDetails(
       { placeId: prediction.place_id, fields: ['name', 'formatted_address', 'geometry'], sessionToken: sessionTokenRef.current },
       (place, status) => {
-        if (status !== 'OK' || !place) return
+        if (status !== 'OK' || !place) {
+          console.error('Place details lookup failed:', status)
+          return
+        }
         if (place.name) onChange(place.name)
         else if (place.formatted_address) onChange(place.formatted_address)
         if (onPlaceSelected && place.geometry?.location) {
@@ -619,11 +620,7 @@ function AddressInput({ value, onChange, onPlaceSelected, placeholder, style }) 
         value={value}
         onChange={e => handleInputChange(e.target.value)}
         onFocus={() => { if (predictions.length > 0) setShowDropdown(true) }}
-        onBlur={() => {
-          // If a prediction row is mid-tap, let its own handler run first —
-          // otherwise blur would hide the list before the click registers.
-          setTimeout(() => { if (!selectingRef.current) setShowDropdown(false) }, 150)
-        }}
+        onBlur={() => setShowDropdown(false)}
         style={style}
       />
       {showDropdown && predictions.length > 0 && (
@@ -635,8 +632,11 @@ function AddressInput({ value, onChange, onPlaceSelected, placeholder, style }) 
           {predictions.map((p, i) => (
             <div
               key={p.place_id}
-              onPointerDown={() => { selectingRef.current = true }}
-              onClick={() => selectPrediction(p)}
+              // Fires BEFORE the input's blur event, and preventDefault stops
+              // the tap from ever blurring the input at all — so there's no
+              // race between "blur hides the list" and "click selects the
+              // row." Selection happens on this single event, full stop.
+              onPointerDown={(e) => { e.preventDefault(); selectPrediction(p) }}
               style={{
                 padding: '12px 14px', cursor: 'pointer', fontFamily: FONT, fontSize: '14px', color: INK,
                 borderBottom: i < predictions.length - 1 ? `1px solid ${CARD_BORDER}` : 'none'
