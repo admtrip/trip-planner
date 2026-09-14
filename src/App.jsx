@@ -541,41 +541,116 @@ function MapTab({ items }) {
 }
 
 // ---------- Address input with Google Places autocomplete ----------
+// Renders its OWN dropdown of predictions as normal React elements, instead
+// of using Google's built-in Autocomplete widget (which injects a
+// "pac-container" positioned via raw screen coordinates outside React's
+// tree). That external positioning is what caused taps to land on the
+// wrong row inside a mobile webview — especially once the keyboard resizes
+// the viewport, Google's dropdown doesn't always reposition in sync with
+// what's actually drawn on screen. Rendering the list ourselves means
+// what's visible is exactly what's clickable, no coordinate math involved.
 function AddressInput({ value, onChange, onPlaceSelected, placeholder, style }) {
   const inputRef = useRef(null)
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
+  const [predictions, setPredictions] = useState([])
+  const [showDropdown, setShowDropdown] = useState(false)
+  const autocompleteServiceRef = useRef(null)
+  const placesServiceRef = useRef(null)
+  const sessionTokenRef = useRef(null)
+  const debounceRef = useRef(null)
+  const selectingRef = useRef(false) // guards against blur hiding the list before a tap registers
 
   useEffect(() => {
-    if (!apiKey || !inputRef.current) return
-    let autocomplete
-    let listener
+    if (!apiKey) return
     loadGoogleMaps(apiKey).then(maps => {
-      if (!inputRef.current || !maps.places) return
-      autocomplete = new maps.places.Autocomplete(inputRef.current, { types: ['geocode', 'establishment'] })
-      listener = autocomplete.addListener('place_changed', () => {
-        const place = autocomplete.getPlace()
-        // Prefer the specific place name — what you actually searched for and
-        // clicked. formatted_address is often more precise for street
-        // addresses, but for places without one (farms, trailheads, etc.)
-        // it can collapse to just the island/region name.
-        if (place?.name) onChange(place.name)
-        else if (place?.formatted_address) onChange(place.formatted_address)
-        if (onPlaceSelected && place?.geometry?.location) {
-          onPlaceSelected({ lat: place.geometry.location.lat(), lng: place.geometry.location.lng() })
-        }
-      })
+      if (!maps.places) return
+      autocompleteServiceRef.current = new maps.places.AutocompleteService()
+      placesServiceRef.current = new maps.places.PlacesService(document.createElement('div'))
+      sessionTokenRef.current = new maps.places.AutocompleteSessionToken()
     }).catch(err => console.error('Places autocomplete failed to load:', err))
-    return () => { if (listener) listener.remove() }
   }, [apiKey])
 
+  function handleInputChange(newValue) {
+    onChange(newValue)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (!newValue.trim() || !autocompleteServiceRef.current) {
+      setPredictions([])
+      setShowDropdown(false)
+      return
+    }
+    debounceRef.current = setTimeout(() => {
+      autocompleteServiceRef.current.getPlacePredictions(
+        { input: newValue, types: ['geocode', 'establishment'], sessionToken: sessionTokenRef.current },
+        (results, status) => {
+          if (status !== 'OK' || !results) { setPredictions([]); setShowDropdown(false); return }
+          setPredictions(results)
+          setShowDropdown(true)
+        }
+      )
+    }, 250)
+  }
+
+  function selectPrediction(prediction) {
+    selectingRef.current = false
+    setShowDropdown(false)
+    setPredictions([])
+    onChange(prediction.structured_formatting?.main_text || prediction.description)
+    if (!placesServiceRef.current) return
+    placesServiceRef.current.getDetails(
+      { placeId: prediction.place_id, fields: ['name', 'formatted_address', 'geometry'], sessionToken: sessionTokenRef.current },
+      (place, status) => {
+        if (status !== 'OK' || !place) return
+        if (place.name) onChange(place.name)
+        else if (place.formatted_address) onChange(place.formatted_address)
+        if (onPlaceSelected && place.geometry?.location) {
+          onPlaceSelected({ lat: place.geometry.location.lat(), lng: place.geometry.location.lng() })
+        }
+        // Fresh session token per completed search, per Google's billing guidance.
+        loadGoogleMaps(apiKey).then(maps => { sessionTokenRef.current = new maps.places.AutocompleteSessionToken() })
+      }
+    )
+  }
+
   return (
-    <input
-      ref={inputRef}
-      placeholder={placeholder}
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      style={style}
-    />
+    <div style={{ position: 'relative' }}>
+      <input
+        ref={inputRef}
+        placeholder={placeholder}
+        value={value}
+        onChange={e => handleInputChange(e.target.value)}
+        onFocus={() => { if (predictions.length > 0) setShowDropdown(true) }}
+        onBlur={() => {
+          // If a prediction row is mid-tap, let its own handler run first —
+          // otherwise blur would hide the list before the click registers.
+          setTimeout(() => { if (!selectingRef.current) setShowDropdown(false) }, 150)
+        }}
+        style={style}
+      />
+      {showDropdown && predictions.length > 0 && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 50,
+          background: 'white', borderRadius: '14px', boxShadow: '0 8px 24px rgba(18,18,18,0.18)',
+          border: `1.5px solid ${CARD_BORDER}`, overflow: 'hidden', maxHeight: '260px', overflowY: 'auto'
+        }}>
+          {predictions.map((p, i) => (
+            <div
+              key={p.place_id}
+              onPointerDown={() => { selectingRef.current = true }}
+              onClick={() => selectPrediction(p)}
+              style={{
+                padding: '12px 14px', cursor: 'pointer', fontFamily: FONT, fontSize: '14px', color: INK,
+                borderBottom: i < predictions.length - 1 ? `1px solid ${CARD_BORDER}` : 'none'
+              }}
+            >
+              <div style={{ fontWeight: '600' }}>{p.structured_formatting?.main_text || p.description}</div>
+              {p.structured_formatting?.secondary_text && (
+                <div style={{ fontSize: '12px', color: MUTED, marginTop: '2px' }}>{p.structured_formatting.secondary_text}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
