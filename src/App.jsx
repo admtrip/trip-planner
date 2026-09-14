@@ -458,10 +458,20 @@ function MapTab({ items }) {
         const newMarkers = []
         const withAddress = items.filter(i => i.address)
         for (const item of withAddress) {
-          const position = await geocodeAddress(geocoder, item.address)
+          // Prefer the exact coordinates saved when the address was picked
+          // from the dropdown — re-geocoding the bare name later can land
+          // on a totally different place if the name isn't unique (e.g.
+          // "Jackson Lake" exists in both Wyoming and Colorado). Only fall
+          // back to a live geocode for older items saved before this fix.
+          const position = (item.address_lat != null && item.address_lng != null)
+            ? { lat: item.address_lat, lng: item.address_lng }
+            : await geocodeAddress(geocoder, item.address)
           if (!position) continue
           const color = TYPE_CONFIG[item.type]?.color || TEAL
           const isSuggestedPin = item.status === 'suggested'
+          const itemMapsLink = (item.address_lat != null && item.address_lng != null)
+            ? `https://www.google.com/maps/search/?api=1&query=${item.address_lat},${item.address_lng}`
+            : mapsLink(item.address)
           const marker = new maps.Marker({ position, map: mapInstance.current, title: item.title, icon: makeMarkerIcon(maps, color, isSuggestedPin) })
           const info = new maps.InfoWindow({
             content: `<div style="font-family:${FONT};padding:2px 4px;min-width:140px;">
@@ -469,7 +479,7 @@ function MapTab({ items }) {
               <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:${color};margin-top:2px;">
                 ${TYPE_CONFIG[item.type]?.label || item.type}${isSuggestedPin ? ' &middot; Suggested idea' : ''}
               </div>
-              <a href="${mapsLink(item.address)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:8px;font-size:12px;color:${ACCENT_TEXT};text-decoration:none;">
+              <a href="${itemMapsLink}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:8px;font-size:12px;color:${ACCENT_TEXT};text-decoration:none;">
                 📍 Open in Google Maps
               </a>
             </div>`
@@ -708,6 +718,8 @@ function App() {
   const [newArrival, setNewArrival] = useState('')
   const [newConfirmation, setNewConfirmation] = useState('')
   const [newAddress, setNewAddress] = useState('')
+  const [newAddressLat, setNewAddressLat] = useState(null)
+  const [newAddressLng, setNewAddressLng] = useState(null)
   const [newItemTimezone, setNewItemTimezone] = useState('')
   const [showItemTimezoneField, setShowItemTimezoneField] = useState(false)
   const [newNotes, setNewNotes] = useState('')
@@ -918,25 +930,40 @@ function App() {
     currenciesUsed.forEach(code => { if (!(code in fxRates)) fetchFxRate(code) })
   }, [items])
 
-  // Geocodes every unique address across all items (suggested and booked)
-  // so the Suggestions tab can cluster nearby ones together and flag
-  // proximity to already-booked days. Shares its cache with the Map tab.
+  // Builds per-item coordinates for the Suggestions tab's proximity
+  // clustering (and its "near your booked plans" flagging). Prefers each
+  // item's own saved coordinates — falling back to a live geocode of the
+  // address text only for older items saved before coordinates were
+  // captured. Keyed by item id rather than address text, so two different
+  // items that happen to share an ambiguous name (e.g. two different
+  // "Jackson Lake"s) never collapse into the same looked-up location.
   useEffect(() => {
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-    if (!apiKey) return
-    const addresses = [...new Set(items.filter(i => i.address).map(i => i.address))]
-    const missing = addresses.filter(a => !(a in geoCache))
+    const withAddress = items.filter(i => i.address)
+    const missing = withAddress.filter(i => !(i.id in geoCache))
     if (missing.length === 0) return
     let cancelled = false
-    loadGoogleMaps(apiKey).then(async maps => {
-      const geocoder = new maps.Geocoder()
+    async function run() {
       const updates = {}
-      for (const addr of missing) {
-        const loc = await geocodeAddressCached(geocoder, addr)
-        updates[addr] = loc // cache a null too, so we don't keep retrying a bad address
+      const needGeocode = []
+      missing.forEach(i => {
+        if (i.address_lat != null && i.address_lng != null) {
+          updates[i.id] = { lat: i.address_lat, lng: i.address_lng }
+        } else {
+          needGeocode.push(i)
+        }
+      })
+      if (needGeocode.length > 0 && apiKey) {
+        const maps = await loadGoogleMaps(apiKey)
+        const geocoder = new maps.Geocoder()
+        for (const i of needGeocode) {
+          const loc = await geocodeAddressCached(geocoder, i.address)
+          updates[i.id] = loc // cache a null too, so we don't keep retrying a bad address
+        }
       }
       if (!cancelled) setGeoCache(prev => ({ ...prev, ...updates }))
-    }).catch(err => console.error('Geocoding for suggestions failed:', err))
+    }
+    run().catch(err => console.error('Geocoding for suggestions failed:', err))
     return () => { cancelled = true }
   }, [items])
 
@@ -1409,7 +1436,7 @@ function App() {
     setNewTitle(''); setNewType('activity'); setNewStatus('suggested')
     setNewDate(''); setNewStartTime(''); setNewEndTime('')
     setNewCheckIn(''); setNewCheckOut(''); setNewDeparture(''); setNewArrival('')
-    setNewConfirmation(''); setNewAddress(''); setNewItemTimezone(''); setShowItemTimezoneField(false); setNewNotes(''); setNewLink('')
+    setNewConfirmation(''); setNewAddress(''); setNewAddressLat(null); setNewAddressLng(null); setNewItemTimezone(''); setShowItemTimezoneField(false); setNewNotes(''); setNewLink('')
     setNewTravelerUserId(''); setNewTravelerName(''); setNewIsPrivate(false)
     setNewIsPrepaid(false); setNewCost(''); setNewCostCurrency('USD'); setNewPaidBy(user.id)
     setNewSplitType('all'); setNewSplitMethod('even')
@@ -1425,7 +1452,7 @@ function App() {
     setNewCheckOut(item.check_out ? item.check_out.slice(0, 16) : '')
     setNewDeparture(item.departure_location || ''); setNewArrival(item.arrival_location || '')
     setNewConfirmation(item.confirmation || '')
-    setNewAddress(item.address || ''); setNewItemTimezone(item.item_timezone || ''); setNewNotes(item.notes || ''); setNewLink(item.link_url || '')
+    setNewAddress(item.address || ''); setNewAddressLat(item.address_lat ?? null); setNewAddressLng(item.address_lng ?? null); setNewItemTimezone(item.item_timezone || ''); setNewNotes(item.notes || ''); setNewLink(item.link_url || '')
     setNewTravelerUserId(item.traveler_user_id || ''); setNewTravelerName(item.traveler_name || '')
     setNewIsPrivate(item.is_private || false)
     setNewIsPrepaid(item.is_prepaid || false); setNewCost(item.cost || ''); setNewCostCurrency(item.cost_currency || 'USD')
@@ -1569,7 +1596,7 @@ function App() {
       departure_location: timing === 'flight' ? (newDeparture || null) : null,
       arrival_location: timing === 'flight' ? (newArrival || null) : null,
       confirmation: TYPE_CONFIG[newType]?.confirmation ? (newConfirmation || null) : null,
-      address: newAddress || null, item_timezone: newItemTimezone || null, notes: newNotes || null, link_url: newLink || null,
+      address: newAddress || null, address_lat: newAddressLat, address_lng: newAddressLng, item_timezone: newItemTimezone || null, notes: newNotes || null, link_url: newLink || null,
       traveler_user_id: newTravelerUserId || null, traveler_name: newTravelerName || null,
       is_private: newIsPrivate,
       is_prepaid: newIsPrepaid, cost: newIsPrepaid ? cost : null, cost_currency: newIsPrepaid ? newCostCurrency : null,
@@ -2917,13 +2944,13 @@ function App() {
                   }
 
                   const withGeo = allSuggested
-                    .filter(i => i.address && geoCache[i.address])
-                    .map(i => ({ ...i, _geo: geoCache[i.address] }))
-                  const withoutGeo = allSuggested.filter(i => !i.address || !geoCache[i.address])
+                    .filter(i => i.address && geoCache[i.id])
+                    .map(i => ({ ...i, _geo: geoCache[i.id] }))
+                  const withoutGeo = allSuggested.filter(i => !i.address || !geoCache[i.id])
 
                   const bookedWithGeo = items
-                    .filter(i => i.status === 'booked' && i.address && geoCache[i.address] && getItemDayKey(i))
-                    .map(i => ({ ...i, _geo: geoCache[i.address], _day: getItemDayKey(i) }))
+                    .filter(i => i.status === 'booked' && i.address && geoCache[i.id] && getItemDayKey(i))
+                    .map(i => ({ ...i, _geo: geoCache[i.id], _day: getItemDayKey(i) }))
 
                   function nearestBookedNote(geo) {
                     let best = null
@@ -3170,8 +3197,10 @@ function App() {
                 <AddressInput
                   placeholder="📍 Address (optional) — start typing"
                   value={newAddress}
-                  onChange={val => { setNewAddress(val); setNewItemTimezone('') }}
+                  onChange={val => { setNewAddress(val); setNewAddressLat(null); setNewAddressLng(null); setNewItemTimezone('') }}
                   onPlaceSelected={({ lat, lng }) => {
+                    setNewAddressLat(lat)
+                    setNewAddressLng(lng)
                     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
                     if (!apiKey) return
                     const timestamp = Math.floor(Date.now() / 1000)
@@ -3182,6 +3211,11 @@ function App() {
                   }}
                   style={{ ...inputStyle, marginBottom: '4px' }}
                 />
+                {newAddress && newAddressLat == null && (
+                  <p style={{ fontSize: '11px', color: GOLD, margin: '2px 0 10px' }}>
+                    ⚠️ Pick this address from the dropdown to pin its exact location — typed-but-unselected addresses may show the wrong spot on the map if the name is shared by multiple places.
+                  </p>
+                )}
 
                 {TYPE_CONFIG[newType]?.timing !== 'none' && (
                   <div style={{ marginBottom: '10px' }}>
